@@ -1,0 +1,67 @@
+schema = 1
+
+# Rules cover the mechanical portion of every API mapping. Component-specific
+# exceptions are recorded below and are deliberately review-required.
+[[rule]]
+react = "boolean prop"
+rust = "builder(bool)"
+status = "mapped"
+[[rule]]
+react = "number prop"
+rust = "builder(number or Pixels)"
+status = "mapped"
+[[rule]]
+react = "union prop"
+rust = "typed enum"
+status = "mapped"
+[[rule]]
+react = "TNode/TElement"
+rust = "AnyElement or named slot"
+status = "mapped"
+[[rule]]
+react = "callback"
+rust = "Fn(event, &mut Window, &mut App)"
+status = "mapped"
+[[rule]]
+react = "value/defaultValue"
+rust = "Entity<XState> + typed change event"
+status = "mapped"
+[[rule]]
+react = "className/style"
+rust = "ElementId + native Styled methods"
+status = "native-adapter"
+[[rule]]
+react = "data-* / CSS selector container"
+rust = "not applicable; TDesignRoot owns native overlays"
+status = "not-applicable"
+
+[[exception]]
+component = "Upload"
+react = "action/requestMethod"
+rust = "Upload::action(HttpUploadBackend) or UploadBackend::upload_with_request; UploadState emits progress/cancel/retry events"
+status = "native-adapter"
+[[exception]]
+component = "Table"
+react = "dataSource/columns"
+rust = "TableDelegate; visible rows are rendered lazily"
+status = "native-adapter"
+[[exception]]
+component = "List"
+react = "dataSource"
+rust = "ListDelegate; visible rows are rendered lazily"
+status = "native-adapter"
+[[exception]]
+component = "Tree"
+react = "data/keys"
+rust = "TreeNode with generic stable String key"
+status = "native-adapter"
+[[exception]]
+component = "DatePicker"
+react = "Dayjs/string"
+rust = "chrono::NaiveDate"
+status = "native-adapter"
+[[exception]]
+component = "TimePicker"
+react = "Dayjs/string"
+rust = "chrono::NaiveTime"
+status = "native-adapter"

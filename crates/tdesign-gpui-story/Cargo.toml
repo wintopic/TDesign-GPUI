@@ -1,0 +1,17 @@
+[package]
+name = "tdesign-gpui-story"
+description = "Native component gallery for tdesign-gpui"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+gpui.workspace = true
+tdesign-gpui = { path = "../tdesign-gpui" }
+
+[lints]
+workspace = true

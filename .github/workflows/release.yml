@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test --workspace
+      - run: cargo doc --workspace --no-deps
+      - run: cargo run -p xtask -- release check
+      - run: cargo package -p tdesign-gpui-assets
+      - run: cargo publish -p tdesign-gpui-assets --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Wait for tdesign-gpui-assets to reach the crates.io index
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in {1..30}; do
+            if cargo search tdesign-gpui-assets --limit 1 | grep -q "tdesign-gpui-assets = \"$version\""; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "tdesign-gpui-assets $version was not visible after 5 minutes" >&2
+          exit 1
+      - run: cargo package -p tdesign-gpui
+      - run: cargo publish -p tdesign-gpui --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

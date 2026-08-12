@@ -1,0 +1,32 @@
+schema = 1
+updated_at = "2026-08-11T21:46:06.600785600+00:00"
+
+[[source]]
+name = "tdesign-api"
+repository = "https://github.com/TDesignOteam/tdesign-api.git"
+branch = "main"
+commit = "2129473c9a800061384861e5f29ea736e04d4121"
+
+[[source]]
+name = "tdesign-common"
+repository = "https://github.com/Tencent/tdesign-common.git"
+branch = "develop"
+commit = "f31cf502d637a118664de0843c96b14ccef2f08a"
+
+[[source]]
+name = "tdesign-react"
+repository = "https://github.com/Tencent/tdesign-react.git"
+branch = "develop"
+commit = "5e1ea92dac96c7869f1f3895a3774cb1436f13d8"
+
+[[source]]
+name = "tdesign-icons"
+repository = "https://github.com/Tencent/tdesign-icons.git"
+branch = "develop"
+commit = "39c33cbcd93691d35d0f7404842bbcdd58be91e1"
+
+[[source]]
+name = "zed"
+repository = "https://github.com/zed-industries/zed.git"
+branch = "main"
+commit = "6634c945d3af826e6466d6da3eee0782c62b5a8d"

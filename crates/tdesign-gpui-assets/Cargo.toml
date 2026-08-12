@@ -1,0 +1,30 @@
+[package]
+name = "tdesign-gpui-assets"
+description = "TDesign icon assets and GPUI asset source"
+keywords = ["tdesign", "gpui", "icons", "svg"]
+categories = ["gui"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+build = "build.rs"
+include = ["src/**", "assets/**", "build.rs", "README.md", "Cargo.toml", "LICENSE-TDESIGN"]
+
+[features]
+default = ["full-icons"]
+full-icons = []
+serde = ["dep:serde"]
+
+[dependencies]
+gpui.workspace = true
+serde = { workspace = true, optional = true }
+
+[build-dependencies]
+heck.workspace = true
+
+[lints]
+workspace = true

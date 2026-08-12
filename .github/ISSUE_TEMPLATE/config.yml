@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/wintopic/TDesign-GPUI/security
+    about: Report vulnerabilities privately according to SECURITY.md, never in a public issue.
+  - name: TDesign React documentation
+    url: https://tdesign.tencent.com/react/getting-started
+    about: Check the upstream React PC component and API behavior.
+  - name: GPUI upstream
+    url: https://github.com/zed-industries/zed/tree/main/crates/gpui
+    about: Review GPUI source and report defects that reproduce independently upstream.

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets --no-default-features
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo test --workspace
+      - run: cargo doc --workspace --no-deps
+      - run: cargo run -p xtask -- parity check
+      - run: cargo run -p xtask -- release check
+
+  gpui-canary:
+    name: GPUI main canary
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+      - run: git clone --depth 1 https://github.com/zed-industries/zed.git .canary/zed
+      - name: Check against Zed main
+        id: canary
+        shell: bash
+        run: |
+          set +e
+          mkdir -p artifacts
+          cargo check -p tdesign-gpui --all-features --config .cargo/gpui-canary.toml 2>&1 | tee artifacts/gpui-canary.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Publish canary diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-main-canary
+          path: artifacts/gpui-canary.log

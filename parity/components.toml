@@ -1,0 +1,29 @@
+schema = 1
+tdesign_surface = "react-pc"
+component_count = 71
+native_config_provider = true
+icon_count = 2354
+
+# Every entry is compiled by `parity::all_component_names` and checked by
+# `cargo xtask parity check`. Detailed upstream prop/event mappings are kept in
+# `api-mapping.toml`; an omitted or incomplete entry blocks a release.
+components = [
+  "Button", "Icon", "Link", "Typography", "Divider", "Grid", "Layout", "Space",
+  "Affix", "Anchor", "BackTop", "Breadcrumb", "Dropdown", "Menu", "Pagination",
+  "Steps", "StickyTool", "Tabs", "Alert", "Dialog", "Drawer", "Guide", "Message",
+  "Notification", "Popconfirm", "Popup", "AutoComplete", "Cascader", "Checkbox",
+  "ColorPicker", "DatePicker", "Form", "Input", "InputAdornment", "InputNumber",
+  "TagInput", "Radio", "RangeInput", "Select", "SelectInput", "Slider", "Switch",
+  "Textarea", "Transfer", "TimePicker", "TreeSelect", "Upload", "Avatar", "Badge",
+  "Calendar", "Card", "Collapse", "Comment", "Descriptions", "Empty", "Image",
+  "ImageViewer", "List", "Loading", "Progress", "QRCode", "Skeleton", "Statistic",
+  "Swiper", "Table", "Tag", "Timeline", "Tooltip", "Tree", "Watermark", "Rate",
+]
+
+[config_provider]
+react = "ConfigProvider"
+rust = "TDesignRoot + TDesignConfig"
+theme = "TDesignTheme + ThemeMode + ThemeOverrides"
+locale = "Locale + LocaleMessages"
+overlay_host = "TDesignRoot"
+status = "native-adapter"

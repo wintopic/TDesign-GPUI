@@ -1,0 +1,9 @@
+/target/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+/upstream-cache/
+/artifacts/
+/.canary/

@@ -1,0 +1,76 @@
+name: Bug report
+description: Report reproducible incorrect behavior in TDesign GPUI
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Search existing issues first and do not disclose security vulnerabilities here; follow SECURITY.md instead.
+  - type: input
+    id: component
+    attributes:
+      label: Component or subsystem
+      description: For example Input, Table, Upload, theme, assets, xtask, or upstream sync.
+      placeholder: Input
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: Include tdesign-gpui, GPUI, and Rust versions or the exact commit SHA.
+      placeholder: tdesign-gpui 0.1.0, gpui 0.2.2, rustc 1.96.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      multiple: true
+      options:
+        - Windows
+        - macOS
+        - Linux (Wayland)
+        - Linux (X11)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and its user impact.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Link the relevant TDesign React PC behavior or GPUI contract when applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide a compact Rust example, repository, or exact steps. Remove secrets and private data.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant diagnostics or drag screenshots here. Use code fences for logs.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I can reproduce this on the versions listed above.
+          required: true

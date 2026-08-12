@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tdesign-gpui",
+    "crates/tdesign-gpui-assets",
+    "crates/tdesign-gpui-story",
+    "xtask",
+]
+default-members = ["crates/tdesign-gpui", "crates/tdesign-gpui-assets"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/wintopic/TDesign-GPUI"
+homepage = "https://github.com/wintopic/TDesign-GPUI"
+authors = ["TDesign GPUI contributors"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+gpui = { version = "0.2.2" }
+futures = "0.3"
+heck = "0.5"
+roxmltree = "0.20"
+qrcodegen = "1.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3.20"
+thiserror = "2.0"
+toml = "0.9"
+walkdir = "2.5"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "warn"
+
+[profile.dev.package]
+gpui = { opt-level = 3 }
+resvg = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
