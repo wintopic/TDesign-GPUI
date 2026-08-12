@@ -1,4 +1,0 @@
-# Used only by CI and local compatibility checks after cloning Zed into
-# `.canary/zed`. The published manifests continue to use crates.io GPUI.
-[patch.crates-io]
-gpui = { path = "../.canary/zed/crates/gpui" }

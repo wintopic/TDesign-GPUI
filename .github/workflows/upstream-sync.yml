@@ -76,9 +76,12 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p artifacts .canary
-          git clone --depth 1 https://github.com/zed-industries/zed.git .canary/zed
-          cargo check -p tdesign-gpui --all-features --config .cargo/gpui-canary.toml 2>&1 | tee artifacts/gpui-canary.log
+          mkdir -p artifacts
+          zed_dir="$RUNNER_TEMP/tdesign-gpui-zed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git clone --depth 1 https://github.com/zed-industries/zed.git "$zed_dir"
+          cargo check -p tdesign-gpui --all-features \
+            --config "patch.crates-io.gpui.path='$zed_dir/crates/gpui'" \
+            2>&1 | tee artifacts/gpui-canary.log
           status=${PIPESTATUS[0]}
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
