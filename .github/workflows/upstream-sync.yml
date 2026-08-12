@@ -99,21 +99,31 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p artifacts
+          artifacts_dir="$GITHUB_WORKSPACE/artifacts"
+          canary_dir="$RUNNER_TEMP/tdesign-gpui-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$artifacts_dir" "$canary_dir"
           zed_dir="$RUNNER_TEMP/tdesign-gpui-zed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git clone --depth 1 https://github.com/zed-industries/zed.git "$zed_dir"
-          cargo tree -p tdesign-gpui --locked \
+          rsync -a \
+            --exclude .git \
+            --exclude artifacts \
+            --exclude target \
+            --exclude upstream-cache \
+            "$GITHUB_WORKSPACE/" "$canary_dir/"
+          cd "$canary_dir"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/gpui-canary"
+          cargo tree -p tdesign-gpui \
             --config "patch.crates-io.gpui.path='$zed_dir/crates/gpui'" \
-            2>&1 | tee artifacts/gpui-canary-tree.log
+            2>&1 | tee "$artifacts_dir/gpui-canary-tree.log"
           tree_status=${PIPESTATUS[0]}
-          if [[ "$tree_status" -ne 0 ]] || ! grep -Fq "$zed_dir/crates/gpui" artifacts/gpui-canary-tree.log; then
-            echo "GPUI path patch did not take effect" | tee -a artifacts/gpui-canary.log
+          if [[ "$tree_status" -ne 0 ]] || ! grep -Fq "$zed_dir/crates/gpui" "$artifacts_dir/gpui-canary-tree.log"; then
+            echo "GPUI path patch did not take effect" | tee -a "$artifacts_dir/gpui-canary.log"
             exit 1
           fi
           cargo check -p tdesign-gpui --all-features \
             --locked \
             --config "patch.crates-io.gpui.path='$zed_dir/crates/gpui'" \
-            2>&1 | tee artifacts/gpui-canary.log
+            2>&1 | tee "$artifacts_dir/gpui-canary.log"
           status=${PIPESTATUS[0]}
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
