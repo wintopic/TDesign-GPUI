@@ -9,8 +9,10 @@ fn main() {
         .with_assets(TDesignAssetSource::new())
         .run(|app| {
             tdesign_gpui::init(app);
-            let _ = app.open_window(gpui::WindowOptions::default(), |_window, cx| {
+            app.open_window(gpui::WindowOptions::default(), |_window, cx| {
                 cx.new(|_| gallery::Gallery::new())
-            });
+            })
+            .expect("open TDesign GPUI smoke gallery");
+            app.activate(true);
         });
 }

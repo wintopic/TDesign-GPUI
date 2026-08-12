@@ -155,6 +155,12 @@ impl Badge {
         self
     }
 
+    /// Disables numeric count clamping.
+    pub fn without_max(mut self) -> Self {
+        self.max = None;
+        self
+    }
+
     /// Sets badge color.
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
         self.color = color.into();
@@ -164,7 +170,7 @@ impl Badge {
 
 impl RenderOnce for Badge {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let count = self.count.map(|count| {
+        let count = (!self.dot).then_some(self.count).flatten().map(|count| {
             let display = count
                 .parse::<usize>()
                 .ok()
@@ -742,6 +748,16 @@ impl CollapseState {
         }
         cx.notify();
     }
+
+    /// Toggles a panel while ensuring at most one key remains expanded.
+    pub fn toggle_accordion(&mut self, key: &str, cx: &mut Context<Self>) {
+        let was_open = self.expanded.contains(key);
+        self.expanded.clear();
+        if !was_open {
+            self.expanded.insert(key.to_owned());
+        }
+        cx.notify();
+    }
 }
 
 /// Accordion-style collapsible panels.
@@ -803,9 +819,10 @@ impl RenderOnce for Collapse {
                                 }
                                 let _ = header_entity.update(cx, |state, cx| {
                                     if accordion {
-                                        state.expanded.clear();
+                                        state.toggle_accordion(&key, cx);
+                                    } else {
+                                        state.toggle(&key, cx);
                                     }
-                                    state.toggle(&key, cx);
                                 });
                             }),
                     )
@@ -1210,6 +1227,7 @@ impl RenderOnce for ImageViewer {
             .id(entity_id("tdesign-image-viewer", &self.state))
             .track_focus(&focus)
             .relative()
+            .size_full()
             .when(open, |this| {
                 this.child(
                     div()

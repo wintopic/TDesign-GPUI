@@ -627,6 +627,32 @@ impl NumberState {
     pub fn decrement(&mut self, cx: &mut Context<Self>) -> ValueChange<f64> {
         self.set_value(self.value - self.step.max(f64::EPSILON), cx)
     }
+
+    /// Formats the value without exposing floating-point representation noise.
+    pub fn formatted_value(&self) -> String {
+        let precision = decimal_places(self.step)
+            .max(decimal_places(self.value.abs()))
+            .min(12);
+        let formatted = format!("{:.precision$}", self.value);
+        if precision == 0 {
+            formatted
+        } else {
+            formatted
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_owned()
+        }
+    }
+}
+
+fn decimal_places(value: f64) -> usize {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    let text = format!("{value:.12}");
+    text.trim_end_matches('0')
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len())
 }
 
 type NumberHandler = Arc<dyn Fn(ValueChange<f64>, &mut Window, &mut App)>;
@@ -666,7 +692,7 @@ impl Sizable for InputNumber {
 impl RenderOnce for InputNumber {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state.read(cx);
-        let value: SharedString = state.value.to_string().into();
+        let value: SharedString = state.formatted_value().into();
         let disabled = state.disabled;
         let entity = self.state.clone();
         let key_entity = self.state.clone();
@@ -704,6 +730,7 @@ impl RenderOnce for InputNumber {
                             }
                         });
                         if let Some(event) = event
+                            && event.changed()
                             && let Some(handler) = &decrement_handler
                         {
                             handler(event, window, cx);
@@ -729,6 +756,7 @@ impl RenderOnce for InputNumber {
                             }
                         });
                         if let Some(event) = event
+                            && event.changed()
                             && let Some(handler) = &increment_handler
                         {
                             handler(event, window, cx);
@@ -755,6 +783,7 @@ impl RenderOnce for InputNumber {
                     }
                 });
                 if let Some(change) = change
+                    && change.changed()
                     && let Some(handler) = &key_handler
                 {
                     handler(change, window, cx);
@@ -800,9 +829,12 @@ impl ToggleState {
     /// Checks the control without toggling an already checked value.
     pub fn check(&mut self, cx: &mut Context<Self>) -> ValueChange<bool> {
         let previous = self.checked;
+        let was_indeterminate = self.indeterminate;
         self.checked = true;
         self.indeterminate = false;
-        cx.notify();
+        if previous != self.checked || was_indeterminate {
+            cx.notify();
+        }
         ValueChange {
             previous,
             current: self.checked,
@@ -889,7 +921,9 @@ macro_rules! toggle_component {
                                 state.toggle(cx)
                             }
                         });
-                        if let Some(handler) = &click_handler {
+                        if event.changed()
+                            && let Some(handler) = &click_handler
+                        {
                             handler(event, window, cx);
                         }
                     })
@@ -908,7 +942,9 @@ macro_rules! toggle_component {
                                     state.toggle(cx)
                                 }
                             });
-                            if let Some(handler) = &key_handler {
+                            if change.changed()
+                                && let Some(handler) = &key_handler
+                            {
                                 handler(change, window, cx);
                             }
                         }
@@ -1384,7 +1420,7 @@ impl SelectState {
 #[derive(Clone, IntoElement)]
 pub struct Select {
     state: Entity<SelectState>,
-    placeholder: SharedString,
+    placeholder: Option<SharedString>,
     on_change: Option<Arc<dyn Fn(&str, &mut Window, &mut App)>>,
 }
 impl Select {
@@ -1392,13 +1428,13 @@ impl Select {
     pub fn new(state: Entity<SelectState>) -> Self {
         Self {
             state,
-            placeholder: "请选择".into(),
+            placeholder: None,
             on_change: None,
         }
     }
     /// Sets placeholder text.
     pub fn placeholder(mut self, value: impl Into<SharedString>) -> Self {
-        self.placeholder = value.into();
+        self.placeholder = Some(value.into());
         self
     }
     /// Registers enabled option selection from pointer or keyboard input.
@@ -1410,12 +1446,15 @@ impl Select {
 impl RenderOnce for Select {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state.read(cx);
+        let placeholder = self
+            .placeholder
+            .unwrap_or_else(|| crate::locale::text(cx, "select-placeholder"));
         let label = state
             .selected
             .as_ref()
             .and_then(|key| state.options.iter().find(|option| &option.key == key))
             .map(|option| option.label.clone())
-            .unwrap_or(self.placeholder);
+            .unwrap_or(placeholder);
         let disabled = state.disabled;
         let open = state.open;
         let highlighted = state.highlighted;
@@ -1619,7 +1658,13 @@ impl DatePickerState {
         cx: &mut Context<Self>,
     ) -> ValueChange<Option<NaiveDate>> {
         let previous = self.value;
-        let next = date.filter(|date| !self.is_date_disabled(*date));
+        if date.is_some_and(|date| self.is_date_disabled(date)) {
+            return ValueChange {
+                previous,
+                current: previous,
+            };
+        }
+        let next = date;
         self.value = next;
         if let Some(date) = next {
             self.highlighted = Some(date);
@@ -1654,40 +1699,59 @@ impl DatePickerState {
 
     /// Moves the visible month by a signed number of months.
     pub fn shift_month(&mut self, amount: i32, cx: &mut Context<Self>) {
-        let mut year = self.view_month.year();
-        let mut month = self.view_month.month0() as i32 + amount;
-        while month < 0 {
-            year -= 1;
-            month += 12;
+        let current = i64::from(self.view_month.year()) * 12 + i64::from(self.view_month.month0());
+        let target = current.saturating_add(i64::from(amount));
+        let year = target.div_euclid(12);
+        let month = target.rem_euclid(12) as u32 + 1;
+        let Ok(year) = i32::try_from(year) else {
+            return;
+        };
+        if let Some(month) = NaiveDate::from_ymd_opt(year, month, 1)
+            && month != self.view_month
+        {
+            self.view_month = month;
+            cx.notify();
         }
-        while month >= 12 {
-            year += 1;
-            month -= 12;
-        }
-        self.view_month = NaiveDate::from_ymd_opt(year, month as u32 + 1, 1).expect("valid month");
-        cx.notify();
     }
 
     /// Moves the highlighted date by a number of days, skipping disabled dates.
     pub fn move_highlight(&mut self, days: i32, cx: &mut Context<Self>) {
+        if days == 0 || self.disabled {
+            return;
+        }
         let mut date = self
             .highlighted
             .or(self.value)
             .unwrap_or_else(|| chrono::Local::now().date_naive());
-        let direction = days.signum();
-        let mut remaining = days.unsigned_abs();
-        while remaining > 0 {
-            let Some(next) = date.checked_add_signed(Duration::days(direction as i64)) else {
-                break;
-            };
-            date = next;
-            if !self.is_date_disabled(date) {
-                remaining -= 1;
-            }
+        let direction = i64::from(days.signum());
+        let Some(mut candidate) = date.checked_add_signed(Duration::days(i64::from(days))) else {
+            return;
+        };
+        if let Some(min) = self.min
+            && candidate < min
+        {
+            candidate = min;
         }
-        if !self.is_date_disabled(date) {
+        if let Some(max) = self.max
+            && candidate > max
+        {
+            candidate = max;
+        }
+        while self.is_date_disabled(candidate) {
+            let Some(next) = candidate.checked_add_signed(Duration::days(direction)) else {
+                return;
+            };
+            if self.min.is_some_and(|min| next < min) || self.max.is_some_and(|max| next > max) {
+                return;
+            }
+            candidate = next;
+        }
+        if candidate != date {
+            date = candidate;
             self.highlighted = Some(date);
-            self.view_month = date.with_day(1).expect("valid first day");
+            if let Some(month) = date.with_day(1) {
+                self.view_month = month;
+            }
             cx.notify();
         }
     }
@@ -1741,8 +1805,8 @@ impl RenderOnce for DatePicker {
         let value: SharedString = state
             .value
             .map(|date| date.format(&self.format).to_string())
-            .unwrap_or_else(|| "选择日期".into())
-            .into();
+            .map(SharedString::from)
+            .unwrap_or_else(|| crate::locale::text(cx, "select-date"));
         let open = state.open;
         let disabled = state.disabled;
         let month = state.view_month;
@@ -1992,8 +2056,10 @@ impl TimePickerState {
         cx: &mut Context<Self>,
     ) -> ValueChange<Option<NaiveTime>> {
         let previous = self.value;
-        self.value = time.filter(|time| !self.is_time_disabled(*time));
-        self.open = false;
+        self.value = match time {
+            Some(time) if self.is_time_disabled(time) => previous,
+            other => other,
+        };
         if previous != self.value {
             cx.notify();
         }
@@ -2009,9 +2075,7 @@ impl TimePickerState {
         seconds: i64,
         cx: &mut Context<Self>,
     ) -> ValueChange<Option<NaiveTime>> {
-        let current = self
-            .value
-            .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).expect("valid midnight"));
+        let current = self.value.unwrap_or_default();
         let (wrapped, day_delta) = current.overflowing_add_signed(Duration::seconds(seconds));
         let candidate = if day_delta > 0 && seconds > 0 {
             self.max.unwrap_or(wrapped)
@@ -2020,7 +2084,8 @@ impl TimePickerState {
         } else if seconds < 0 {
             self.min.map_or(wrapped, |min| wrapped.max(min))
         } else {
-            self.max.map_or(wrapped, |max| wrapped.min(max))
+            let candidate = self.min.map_or(wrapped, |min| wrapped.max(min));
+            self.max.map_or(candidate, |max| candidate.min(max))
         };
         self.set_value(Some(candidate), cx)
     }
@@ -2073,8 +2138,8 @@ impl RenderOnce for TimePicker {
         let value: SharedString = state
             .value
             .map(|time| time.format(&self.format).to_string())
-            .unwrap_or_else(|| "选择时间".into())
-            .into();
+            .map(SharedString::from)
+            .unwrap_or_else(|| crate::locale::text(cx, "select-time"));
         let open = state.open;
         let disabled = state.disabled;
         let focus = state.focus_handle.clone();
@@ -2263,6 +2328,33 @@ pub enum UploadEvent {
     Retried { path: PathBuf },
 }
 
+/// Opaque handle for one path-specific upload generation.
+///
+/// Passing this handle back to the attempt-aware state methods prevents a
+/// delayed task from mutating a newer retry of the same local path.
+#[derive(Clone, Debug)]
+pub struct UploadAttempt {
+    path: PathBuf,
+    generation: u64,
+    cancellation: UploadCancellation,
+}
+impl UploadAttempt {
+    /// Returns the local path associated with this attempt.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the cooperative cancellation handle for the backend request.
+    pub fn cancellation(&self) -> UploadCancellation {
+        self.cancellation.clone()
+    }
+
+    /// Returns whether cancellation was requested for this attempt.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+}
+
 /// State for native file selection and injected upload transport.
 #[derive(Debug, Default)]
 pub struct UploadState {
@@ -2270,6 +2362,8 @@ pub struct UploadState {
     pub disabled: bool,
     progress: HashMap<PathBuf, UploadProgress>,
     cancellations: HashMap<PathBuf, UploadCancellation>,
+    attempts: HashMap<PathBuf, u64>,
+    next_attempt: u64,
 }
 impl EventEmitter<UploadEvent> for UploadState {}
 impl UploadState {
@@ -2291,14 +2385,13 @@ impl UploadState {
         let mut paths = paths.into_iter().collect::<Vec<_>>();
         if !multiple && !paths.is_empty() {
             paths.truncate(1);
-            for (path, status) in self.files.drain(..) {
-                if matches!(status, UploadStatus::Uploading) {
-                    if let Some(cancellation) = self.cancellations.get(&path) {
-                        cancellation.cancel();
-                    }
-                }
-                self.progress.remove(&path);
-                self.cancellations.remove(&path);
+            let previous = self
+                .files
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            for path in previous {
+                self.remove_file(&path, cx);
             }
         }
 
@@ -2337,11 +2430,21 @@ impl UploadState {
     }
 
     /// Marks a queued path as uploading and returns its cancellation handle.
+    ///
+    /// This compatibility method operates on the current path generation. New
+    /// orchestration code should prefer [`Self::begin_attempt`] and the
+    /// attempt-aware progress/completion methods.
     pub fn begin_upload(
         &mut self,
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Option<UploadCancellation> {
+        self.begin_attempt(path, cx)
+            .map(|attempt| attempt.cancellation)
+    }
+
+    /// Marks a queued path as uploading and returns a generation-safe handle.
+    pub fn begin_attempt(&mut self, path: &Path, cx: &mut Context<Self>) -> Option<UploadAttempt> {
         if self.disabled {
             return None;
         }
@@ -2350,6 +2453,8 @@ impl UploadState {
             return None;
         }
         let cancellation = UploadCancellation::new();
+        self.next_attempt = self.next_attempt.wrapping_add(1).max(1);
+        let attempt = self.next_attempt;
         entry.1 = UploadStatus::Uploading;
         self.progress.insert(
             path.to_path_buf(),
@@ -2360,20 +2465,44 @@ impl UploadState {
         );
         self.cancellations
             .insert(path.to_path_buf(), cancellation.clone());
+        self.attempts.insert(path.to_path_buf(), attempt);
         cx.emit(UploadEvent::Started {
             path: path.to_path_buf(),
         });
         cx.notify();
-        Some(cancellation)
+        Some(UploadAttempt {
+            path: path.to_path_buf(),
+            generation: attempt,
+            cancellation,
+        })
     }
 
-    /// Applies a progress sample to an active upload.
+    /// Applies a progress sample to the current active generation for a path.
     pub fn set_progress(&mut self, path: &Path, progress: UploadProgress, cx: &mut Context<Self>) {
-        if !self
-            .files
-            .iter()
-            .any(|(current, status)| current == path && matches!(status, UploadStatus::Uploading))
-        {
+        let Some(generation) = self.attempts.get(path).copied() else {
+            return;
+        };
+        self.set_progress_for_generation(path, generation, progress, cx);
+    }
+
+    /// Applies progress only if `attempt` is still the current path generation.
+    pub fn set_attempt_progress(
+        &mut self,
+        attempt: &UploadAttempt,
+        progress: UploadProgress,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_progress_for_generation(&attempt.path, attempt.generation, progress, cx);
+    }
+
+    fn set_progress_for_generation(
+        &mut self,
+        path: &Path,
+        generation: u64,
+        progress: UploadProgress,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_current_attempt(path, generation) {
             return;
         }
         self.progress.insert(path.to_path_buf(), progress);
@@ -2385,20 +2514,45 @@ impl UploadState {
         cx.notify();
     }
 
-    /// Marks an active upload as successful.
+    /// Marks the current active generation for a path as successful.
     pub fn finish_success(
         &mut self,
         path: &Path,
         url: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        let url = url.into();
+        let Some(generation) = self.attempts.get(path).copied() else {
+            return;
+        };
+        self.finish_success_for_generation(path, generation, url.into(), cx);
+    }
+
+    /// Marks an upload successful only if `attempt` is still current.
+    pub fn finish_attempt_success(
+        &mut self,
+        attempt: &UploadAttempt,
+        url: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_success_for_generation(&attempt.path, attempt.generation, url.into(), cx);
+    }
+
+    fn finish_success_for_generation(
+        &mut self,
+        path: &Path,
+        generation: u64,
+        url: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_current_attempt(path, generation) {
+            return;
+        }
         let Some((_, status)) = self.files.iter_mut().find(|(current, _)| current == path) else {
             return;
         };
         if let Some(cancellation) = self.cancellations.get(path) {
             if cancellation.is_cancelled() {
-                self.cancel_file(path, cx);
+                self.cancel_generation(path, generation, cx);
                 return;
             }
         }
@@ -2407,6 +2561,7 @@ impl UploadState {
             progress.uploaded_bytes = progress.total_bytes.unwrap_or(progress.uploaded_bytes);
         }
         self.cancellations.remove(path);
+        self.attempts.remove(path);
         cx.emit(UploadEvent::Succeeded {
             path: path.to_path_buf(),
             url,
@@ -2414,27 +2569,53 @@ impl UploadState {
         cx.notify();
     }
 
-    /// Marks an active upload as failed.
+    /// Marks the current active generation for a path as failed.
     pub fn finish_failure(
         &mut self,
         path: &Path,
         error: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
+        let Some(generation) = self.attempts.get(path).copied() else {
+            return;
+        };
+        self.finish_failure_for_generation(path, generation, error.into(), cx);
+    }
+
+    /// Marks an upload failed only if `attempt` is still current.
+    pub fn finish_attempt_failure(
+        &mut self,
+        attempt: &UploadAttempt,
+        error: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_failure_for_generation(&attempt.path, attempt.generation, error.into(), cx);
+    }
+
+    fn finish_failure_for_generation(
+        &mut self,
+        path: &Path,
+        generation: u64,
+        error: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_current_attempt(path, generation) {
+            return;
+        }
         if self
             .cancellations
             .get(path)
             .is_some_and(UploadCancellation::is_cancelled)
         {
-            self.cancel_file(path, cx);
+            self.cancel_generation(path, generation, cx);
             return;
         }
-        let error = error.into();
         let Some((_, status)) = self.files.iter_mut().find(|(current, _)| current == path) else {
             return;
         };
         *status = UploadStatus::Failed(error.clone());
         self.cancellations.remove(path);
+        self.attempts.remove(path);
         cx.emit(UploadEvent::Failed {
             path: path.to_path_buf(),
             error,
@@ -2444,6 +2625,33 @@ impl UploadState {
 
     /// Requests cancellation of an active upload.
     pub fn cancel_file(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
+        let Some(attempt) = self.attempts.get(path).copied() else {
+            let Some((_, status)) = self.files.iter_mut().find(|(current, _)| current == path)
+            else {
+                return false;
+            };
+            if matches!(status, UploadStatus::Canceled) {
+                return true;
+            }
+            *status = UploadStatus::Canceled;
+            cx.emit(UploadEvent::Canceled {
+                path: path.to_path_buf(),
+            });
+            cx.notify();
+            return true;
+        };
+        self.cancel_generation(path, attempt, cx)
+    }
+
+    /// Cancels an upload only if `attempt` is still the current path generation.
+    pub fn cancel_attempt(&mut self, attempt: &UploadAttempt, cx: &mut Context<Self>) -> bool {
+        self.cancel_generation(&attempt.path, attempt.generation, cx)
+    }
+
+    fn cancel_generation(&mut self, path: &Path, generation: u64, cx: &mut Context<Self>) -> bool {
+        if !self.is_current_attempt(path, generation) {
+            return false;
+        }
         let Some((_, status)) = self.files.iter_mut().find(|(current, _)| current == path) else {
             return false;
         };
@@ -2472,6 +2680,7 @@ impl UploadState {
         self.progress
             .insert(path.to_path_buf(), UploadProgress::default());
         self.cancellations.remove(path);
+        self.attempts.remove(path);
         cx.emit(UploadEvent::Retried {
             path: path.to_path_buf(),
         });
@@ -2490,6 +2699,7 @@ impl UploadState {
         self.files.remove(index);
         self.progress.remove(path);
         self.cancellations.remove(path);
+        self.attempts.remove(path);
         cx.emit(UploadEvent::Removed {
             path: path.to_path_buf(),
         });
@@ -2508,6 +2718,13 @@ impl UploadState {
             self.remove_file(&path, cx);
         }
     }
+
+    fn is_current_attempt(&self, path: &Path, attempt: u64) -> bool {
+        self.attempts.get(path).copied() == Some(attempt)
+            && self.files.iter().any(|(current, status)| {
+                current == path && matches!(status, UploadStatus::Uploading)
+            })
+    }
 }
 
 async fn upload_paths_for_state(
@@ -2517,10 +2734,10 @@ async fn upload_paths_for_state(
     cx: &mut AsyncApp,
 ) -> anyhow::Result<()> {
     for path in paths {
-        let Some(cancellation) = state.update(cx, |state, cx| state.begin_upload(&path, cx))?
-        else {
+        let Some(attempt) = state.update(cx, |state, cx| state.begin_attempt(&path, cx))? else {
             continue;
         };
+        let cancellation = attempt.cancellation();
         let (progress_tx, progress_rx) = mpsc::unbounded();
         let request = UploadRequest::new(path.to_string_lossy().to_string())
             .cancellation(cancellation.clone())
@@ -2538,7 +2755,9 @@ async fn upload_paths_for_state(
                     let Some(progress) = progress else {
                         break upload_task.await;
                     };
-                    state.update(cx, |state, cx| state.set_progress(&path, progress, cx))?;
+                    state.update(cx, |state, cx| {
+                        state.set_attempt_progress(&attempt, progress, cx)
+                    })?;
                 }
             }
         };
@@ -2546,16 +2765,20 @@ async fn upload_paths_for_state(
             let Some(Some(progress)) = progress_rx.next().now_or_never() else {
                 break;
             };
-            state.update(cx, |state, cx| state.set_progress(&path, progress, cx))?;
+            state.update(cx, |state, cx| {
+                state.set_attempt_progress(&attempt, progress, cx)
+            })?;
         }
 
-        if cancellation.is_cancelled() {
-            state.update(cx, |state, cx| state.cancel_file(&path, cx))?;
+        if attempt.is_cancelled() {
+            state.update(cx, |state, cx| state.cancel_attempt(&attempt, cx))?;
         } else {
             match result {
-                Ok(url) => state.update(cx, |state, cx| state.finish_success(&path, url, cx))?,
+                Ok(url) => state.update(cx, |state, cx| {
+                    state.finish_attempt_success(&attempt, url, cx)
+                })?,
                 Err(error) => state.update(cx, |state, cx| {
-                    state.finish_failure(&path, error.to_string(), cx)
+                    state.finish_attempt_failure(&attempt, error.to_string(), cx)
                 })?,
             }
         }
@@ -2570,7 +2793,7 @@ pub struct Upload {
     backend: Option<Arc<dyn UploadBackend>>,
     action: Option<SharedString>,
     multiple: bool,
-    label: SharedString,
+    label: Option<SharedString>,
 }
 impl Upload {
     /// Creates an upload control.
@@ -2580,7 +2803,7 @@ impl Upload {
             backend: None,
             action: None,
             multiple: false,
-            label: "选择文件".into(),
+            label: None,
         }
     }
     /// Injects the upload implementation.
@@ -2600,7 +2823,7 @@ impl Upload {
     }
     /// Sets the visible selector label.
     pub fn label(mut self, value: impl Into<SharedString>) -> Self {
-        self.label = value.into();
+        self.label = Some(value.into());
         self
     }
     /// Returns the state entity used by this control.
@@ -2618,18 +2841,25 @@ impl Upload {
     pub fn prompt_for_files(
         cx: &App,
         multiple: bool,
+        prompt: impl Into<SharedString>,
     ) -> oneshot::Receiver<anyhow::Result<Option<Vec<PathBuf>>>> {
         cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple,
-            prompt: Some("选择文件".into()),
+            prompt: Some(prompt.into()),
         })
     }
 
     /// Prompts for paths, adds them to state, and starts uploads when a backend exists.
     pub fn choose_files(&self, cx: &mut App) -> Task<anyhow::Result<Option<Vec<PathBuf>>>> {
-        let receiver = Self::prompt_for_files(cx, self.multiple);
+        let receiver = Self::prompt_for_files(
+            cx,
+            self.multiple,
+            self.label
+                .clone()
+                .unwrap_or_else(|| crate::locale::text(cx, "choose-file")),
+        );
         let state = self.state.downgrade();
         let multiple = self.multiple;
         let backend = self.resolved_backend();
@@ -2701,7 +2931,17 @@ impl RenderOnce for Upload {
         let backend = self.resolved_backend();
         let button_state = state_entity.clone();
         let button_backend = backend.clone();
-        let button_label = self.label.clone();
+        let button_label = self
+            .label
+            .clone()
+            .unwrap_or_else(|| crate::locale::text(cx, "choose-file"));
+        let upload_ready = crate::locale::text(cx, "upload-ready");
+        let upload_uploading = crate::locale::text(cx, "upload-uploading");
+        let upload_success = crate::locale::text(cx, "upload-success");
+        let upload_failed = crate::locale::text(cx, "upload-failed");
+        let upload_canceled = crate::locale::text(cx, "upload-canceled");
+        let cancel_text = crate::locale::text(cx, "cancel");
+        let retry_text = crate::locale::text(cx, "retry");
         let mut root = div()
             .id(entity_id("tdesign-upload", &self.state))
             .flex()
@@ -2721,7 +2961,7 @@ impl RenderOnce for Upload {
                     .border_color(gpui::rgb(0xdcdcdc))
                     .when(disabled, |this| this.opacity(0.5))
                     .child("⇧")
-                    .child(button_label)
+                    .child(button_label.clone())
                     .on_click(move |_: &ClickEvent, _, cx| {
                         if !button_state.read(cx).disabled {
                             Self::choose_files(
@@ -2730,7 +2970,7 @@ impl RenderOnce for Upload {
                                     backend: button_backend.clone(),
                                     action: None,
                                     multiple,
-                                    label: "选择文件".into(),
+                                    label: Some(button_label.clone()),
                                 },
                                 cx,
                             )
@@ -2746,17 +2986,18 @@ impl RenderOnce for Upload {
                 let path_for_action = path.clone();
                 let action_state = state_entity.clone();
                 let action_backend = backend.clone();
+                let path_id = path.to_string_lossy();
                 let progress = state.progress.get(path).copied().unwrap_or_default();
                 let status_label: SharedString = match status {
-                    UploadStatus::Ready => "待上传".into(),
+                    UploadStatus::Ready => upload_ready.clone(),
                     UploadStatus::Uploading => progress
                         .fraction()
-                        .map(|fraction| format!("上传中 {:.0}%", fraction * 100.))
-                        .unwrap_or_else(|| "上传中".to_owned())
+                        .map(|fraction| format!("{} {:.0}%", upload_uploading, fraction * 100.))
+                        .unwrap_or_else(|| upload_uploading.to_string())
                         .into(),
-                    UploadStatus::Success(_) => "已完成".into(),
-                    UploadStatus::Failed(_) => "失败".into(),
-                    UploadStatus::Canceled => "已取消".into(),
+                    UploadStatus::Success(_) => upload_success.clone(),
+                    UploadStatus::Failed(_) => upload_failed.clone(),
+                    UploadStatus::Canceled => upload_canceled.clone(),
                 };
                 let file_name: SharedString = path
                     .file_name()
@@ -2768,9 +3009,12 @@ impl RenderOnce for Upload {
                     UploadStatus::Uploading => {
                         let path = path_for_action.clone();
                         div()
-                            .child("取消")
+                            .child(cancel_text.clone())
                             .text_color(gpui::rgb(0x0052d9))
-                            .id(entity_id("tdesign-upload-cancel", &action_state))
+                            .id(SharedString::from(format!(
+                                "tdesign-upload-cancel-{:?}-{path_id}",
+                                action_state.entity_id()
+                            )))
                             .on_click(move |_, _, cx| {
                                 let _ = action_state
                                     .update(cx, |state, cx| state.cancel_file(&path, cx));
@@ -2780,9 +3024,12 @@ impl RenderOnce for Upload {
                     UploadStatus::Failed(_) | UploadStatus::Canceled => {
                         let path = path_for_action.clone();
                         div()
-                            .child("重试")
+                            .child(retry_text.clone())
                             .text_color(gpui::rgb(0x0052d9))
-                            .id(entity_id("tdesign-upload-retry", &action_state))
+                            .id(SharedString::from(format!(
+                                "tdesign-upload-retry-{:?}-{path_id}",
+                                action_state.entity_id()
+                            )))
                             .on_click(move |_, _, cx| {
                                 let accepted = action_state
                                     .update(cx, |state, cx| state.retry_file(&path, cx));
@@ -2810,7 +3057,10 @@ impl RenderOnce for Upload {
                         div()
                             .child("×")
                             .text_color(gpui::rgb(0x666666))
-                            .id(entity_id("tdesign-upload-remove", &action_state))
+                            .id(SharedString::from(format!(
+                                "tdesign-upload-remove-{:?}-{path_id}",
+                                action_state.entity_id()
+                            )))
                             .on_click(move |_, _, cx| {
                                 let _ = action_state
                                     .update(cx, |state, cx| state.remove_file(&path, cx));
@@ -2835,7 +3085,7 @@ impl RenderOnce for Upload {
 }
 /// Upload module.
 pub mod upload {
-    pub use super::{Upload, UploadEvent, UploadState, UploadStatus};
+    pub use super::{Upload, UploadAttempt, UploadEvent, UploadState, UploadStatus};
     pub use crate::{
         HttpUploadBackend, UploadBackend, UploadCancellation, UploadProgress, UploadRequest,
     };

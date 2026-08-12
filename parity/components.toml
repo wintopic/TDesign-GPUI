@@ -4,9 +4,8 @@ component_count = 71
 native_config_provider = true
 icon_count = 2354
 
-# Every entry is compiled by `parity::all_component_names` and checked by
-# `cargo xtask parity check`. Detailed upstream prop/event mappings are kept in
-# `api-mapping.toml`; an omitted or incomplete entry blocks a release.
+# `cargo xtask parity check` validates this list and the generated API records.
+# Detailed upstream prop/event mappings are kept in `api-mapping.toml`.
 components = [
   "Button", "Icon", "Link", "Typography", "Divider", "Grid", "Layout", "Space",
   "Affix", "Anchor", "BackTop", "Breadcrumb", "Dropdown", "Menu", "Pagination",

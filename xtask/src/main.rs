@@ -13,8 +13,6 @@ use std::{
 };
 use upstream::{Options, UpstreamCommand};
 
-const EXPECTED_COMPONENTS: usize = 71;
-const EXPECTED_ICONS: usize = 2354;
 /// The numeric platform id used by tdesign-api for React PC fields.
 const REACT_PC_PLATFORM: &str = "2";
 
@@ -93,7 +91,7 @@ fn parse_ref(value: &str, options: &mut Options) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: cargo xtask <upstream check|upstream sync --apply [--ref source=ref] [--json path]|upstream canary --json path --status success|failure [--log path]|parity check|release check>"
+    "usage: cargo xtask <upstream check|upstream sync --apply [--ref source=ref] [--json path]|upstream canary --json path --status success|failure [--log path]|parity check|parity generate|release check>"
 }
 
 fn annotate_canary(args: &[String]) -> Result<()> {
@@ -171,25 +169,6 @@ fn annotate_canary(args: &[String]) -> Result<()> {
     )
     .with_context(|| format!("write canary report {}", json_path.display()))?;
 
-    if status != "success" {
-        let markdown_path = root().join("upstream/review-report.md");
-        let mut markdown = if markdown_path.exists() {
-            fs::read_to_string(&markdown_path)?
-        } else {
-            String::from("# Upstream review required\n\n")
-        };
-        markdown.push_str("\n## GPUI main canary\n\n");
-        markdown.push_str(&format!("Status: `{status}`\n\n"));
-        if !excerpt.is_empty() {
-            markdown.push_str("```text\n");
-            markdown.push_str(&excerpt);
-            markdown.push_str("\n```\n");
-        }
-        if let Some(parent) = markdown_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(markdown_path, markdown)?;
-    }
     println!("upstream: GPUI canary annotated as {status}");
     Ok(())
 }
@@ -209,11 +188,12 @@ fn parity_check() -> Result<()> {
         .get("components")
         .and_then(toml::Value::as_array)
         .context("components array missing")?;
-    if components.len() != EXPECTED_COMPONENTS {
+    let expected_components = manifest_count(&value, "component_count")?;
+    if components.len() != expected_components {
         bail!(
             "parity manifest contains {}, expected {} components",
             components.len(),
-            EXPECTED_COMPONENTS
+            expected_components
         );
     }
     let mut names = BTreeSet::new();
@@ -333,6 +313,13 @@ fn parity_check() -> Result<()> {
         bail!("component parity snapshot does not cover every manifest component");
     }
 
+    let expected_records = build_parity_snapshot(&value)?;
+    if records != expected_records {
+        bail!(
+            "component parity snapshot is stale or does not match the locked tdesign-api data; run `cargo xtask parity generate`"
+        );
+    }
+
     let mappings = root().join("parity/api-mapping.toml");
     let mapping_text =
         fs::read_to_string(&mappings).with_context(|| format!("read {}", mappings.display()))?;
@@ -365,17 +352,42 @@ fn parity_generate() -> Result<()> {
     let manifest_text = fs::read_to_string(&manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
     let manifest: toml::Value = toml::from_str(&manifest_text).context("parse parity manifest")?;
+    let snapshot = build_parity_snapshot(&manifest)?;
+    let component_count = snapshot
+        .get("components")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let output_path = root().join("parity/component-parity.json");
+    fs::write(
+        &output_path,
+        format!("{}\n", serde_json::to_string_pretty(&snapshot)?),
+    )
+    .with_context(|| format!("write {}", output_path.display()))?;
+    println!(
+        "parity: generated {} component records at {}",
+        component_count,
+        output_path.display()
+    );
+    Ok(())
+}
+
+fn build_parity_snapshot(manifest: &toml::Value) -> Result<Value> {
     let components = manifest
         .get("components")
         .and_then(toml::Value::as_array)
         .context("components array missing")?
         .iter()
-        .filter_map(toml::Value::as_str)
-        .collect::<Vec<_>>();
+        .map(|component| component.as_str().context("component must be string"))
+        .collect::<Result<Vec<_>>>()?;
 
-    let api_path = root().join("upstream-cache/tdesign-api.git");
-    let api_commit = locked_upstream_commit("tdesign-api")?;
-    let api_object = format!("{api_commit}:packages/scripts/api.json");
+    let source = locked_upstream_source("tdesign-api")?;
+    let api_path = upstream::ensure_locked_source(
+        &source.name,
+        &source.repository,
+        &source.branch,
+        &source.commit,
+    )?;
+    let api_object = format!("{}:packages/scripts/api.json", source.commit);
     let output = Command::new("git")
         .args([
             "--git-dir",
@@ -386,7 +398,11 @@ fn parity_generate() -> Result<()> {
         .output()
         .context("read tdesign-api API snapshot")?;
     if !output.status.success() {
-        bail!("tdesign-api cache is unavailable; run `cargo xtask upstream sync --apply` first");
+        bail!(
+            "unable to read locked tdesign-api snapshot {}: {}",
+            source.commit,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     let api: Value =
         serde_json::from_slice(&output.stdout).context("parse tdesign-api api.json")?;
@@ -483,25 +499,13 @@ fn parity_generate() -> Result<()> {
         }));
     }
 
-    let snapshot = json!({
+    Ok(json!({
         "schema": 1,
         "platform": "React(PC)",
-        "upstream": format!("tdesign-api@{api_commit}"),
+        "upstream": format!("tdesign-api@{}", source.commit),
         "generated_by": "cargo xtask parity generate",
         "components": records,
-    });
-    let output_path = root().join("parity/component-parity.json");
-    fs::write(
-        &output_path,
-        format!("{}\n", serde_json::to_string_pretty(&snapshot)?),
-    )
-    .with_context(|| format!("write {}", output_path.display()))?;
-    println!(
-        "parity: generated {} component records at {}",
-        components.len(),
-        output_path.display()
-    );
-    Ok(())
+    }))
 }
 
 /// Returns the tdesign-api records that make up one React PC component.
@@ -532,6 +536,17 @@ fn upstream_component_names(component: &str) -> Vec<String> {
 }
 
 fn locked_upstream_commit(source_name: &str) -> Result<String> {
+    Ok(locked_upstream_source(source_name)?.commit)
+}
+
+struct LockedUpstreamSource {
+    name: String,
+    repository: String,
+    branch: String,
+    commit: String,
+}
+
+fn locked_upstream_source(source_name: &str) -> Result<LockedUpstreamSource> {
     let path = root().join("upstream.lock.toml");
     let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let lock: toml::Value = toml::from_str(&text).context("parse upstream.lock.toml")?;
@@ -539,12 +554,17 @@ fn locked_upstream_commit(source_name: &str) -> Result<String> {
         .and_then(toml::Value::as_array)
         .and_then(|sources| {
             sources.iter().find_map(|source| {
-                (source.get("name").and_then(toml::Value::as_str) == Some(source_name))
-                    .then(|| source.get("commit").and_then(toml::Value::as_str))
-                    .flatten()
+                if source.get("name").and_then(toml::Value::as_str) != Some(source_name) {
+                    return None;
+                }
+                Some(LockedUpstreamSource {
+                    name: source.get("name")?.as_str()?.to_owned(),
+                    repository: source.get("repository")?.as_str()?.to_owned(),
+                    branch: source.get("branch")?.as_str()?.to_owned(),
+                    commit: source.get("commit")?.as_str()?.to_owned(),
+                })
             })
         })
-        .map(str::to_owned)
         .with_context(|| format!("upstream.lock.toml has no {source_name} source"))
 }
 
@@ -604,6 +624,9 @@ fn field_mapping(field_name: &str) -> (&'static str, &'static str) {
 
 fn release_check() -> Result<()> {
     parity_check()?;
+    let parity_text = fs::read_to_string(root().join("parity/components.toml"))?;
+    let parity_manifest: toml::Value = toml::from_str(&parity_text)?;
+    let expected_icons = manifest_count(&parity_manifest, "icon_count")?;
     let icon_dir = root().join("crates/tdesign-gpui-assets/assets/icons");
     let mut hasher = Sha256::new();
     let mut count = 0usize;
@@ -615,27 +638,72 @@ fn release_check() -> Result<()> {
             count += 1;
         }
     }
-    if count != EXPECTED_ICONS {
-        bail!("expected {EXPECTED_ICONS} embedded icons, found {count}");
+    if count != expected_icons {
+        bail!("expected {expected_icons} embedded icons, found {count}");
+    }
+    let root_apache = require_notice(
+        "LICENSE-APACHE",
+        &["Apache License", "END OF TERMS AND CONDITIONS"],
+    )?;
+    for license in [
+        "crates/tdesign-gpui/LICENSE-APACHE",
+        "crates/tdesign-gpui-assets/LICENSE-APACHE",
+    ] {
+        let packaged = require_notice(license, &["Apache License", "END OF TERMS AND CONDITIONS"])?;
+        if packaged != root_apache {
+            bail!("packaged Apache license {license} differs from the repository root");
+        }
     }
     for license in [
         "LICENSE-MIT",
-        "LICENSE-APACHE",
+        "crates/tdesign-gpui/LICENSE-MIT",
+        "crates/tdesign-gpui-assets/LICENSE-MIT",
         "crates/tdesign-gpui-assets/LICENSE-TDESIGN",
     ] {
-        let path = root().join(license);
-        if !path.exists() || fs::metadata(&path)?.len() < 512 {
-            bail!(
-                "license file {} is missing or suspiciously short",
-                path.display()
-            );
-        }
+        require_notice(
+            license,
+            &[
+                "Permission is hereby granted",
+                "THE SOFTWARE IS PROVIDED \"AS IS\"",
+            ],
+        )?;
+    }
+    for notice in [
+        "THIRD_PARTY_NOTICES.md",
+        "crates/tdesign-gpui/THIRD_PARTY_NOTICES.md",
+        "crates/tdesign-gpui-assets/THIRD_PARTY_NOTICES.md",
+    ] {
+        require_notice(notice, &["TDesign", "GPUI"])?;
     }
     println!(
         "release: parity and {count} icons pass; asset sha256={:x}",
         hasher.finalize()
     );
     Ok(())
+}
+
+fn require_notice(relative: &str, required_fragments: &[&str]) -> Result<String> {
+    let path = root().join(relative);
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("read required notice {}", path.display()))?;
+    for fragment in required_fragments {
+        if !text.contains(fragment) {
+            bail!(
+                "required notice {} does not contain {:?}",
+                path.display(),
+                fragment
+            );
+        }
+    }
+    Ok(text.replace("\r\n", "\n"))
+}
+
+fn manifest_count(value: &toml::Value, key: &str) -> Result<usize> {
+    value
+        .get(key)
+        .and_then(toml::Value::as_integer)
+        .and_then(|count| usize::try_from(count).ok())
+        .with_context(|| format!("parity manifest {key} is missing or invalid"))
 }
 
 #[cfg(test)]

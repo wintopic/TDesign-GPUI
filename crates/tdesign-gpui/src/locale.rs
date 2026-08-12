@@ -1,6 +1,6 @@
 //! Localized strings and locale selection.
 
-use gpui::Global;
+use gpui::{App, Global, SharedString};
 use std::collections::BTreeMap;
 
 /// A locale identifier supported by TDesign.
@@ -71,20 +71,73 @@ pub struct TDesignLocaleGlobal {
 impl Global for TDesignLocaleGlobal {}
 
 /// Built-in copy with an English fallback for custom locales.
-pub fn builtin(locale: &Locale, key: &str) -> &'static str {
+pub fn builtin<'a>(locale: &Locale, key: &'a str) -> &'a str {
     match (locale.as_str(), key) {
         ("zh-CN", "loading") => "加载中",
         ("zh-CN", "empty") => "暂无数据",
         ("zh-CN", "confirm") => "确定",
         ("zh-CN", "cancel") => "取消",
+        ("zh-CN", "select-date") => "选择日期",
+        ("zh-CN", "select-time") => "选择时间",
+        ("zh-CN", "input-placeholder") => "请输入",
+        ("zh-CN", "select-placeholder") => "请选择",
+        ("zh-CN", "tag-input-placeholder") => "请输入并确认",
+        ("zh-CN", "transfer-source") => "源列表",
+        ("zh-CN", "transfer-target") => "目标列表",
+        ("zh-CN", "choose-file") => "选择文件",
+        ("zh-CN", "upload-ready") => "待上传",
+        ("zh-CN", "upload-uploading") => "上传中",
+        ("zh-CN", "upload-success") => "已完成",
+        ("zh-CN", "upload-failed") => "失败",
+        ("zh-CN", "upload-canceled") => "已取消",
+        ("zh-CN", "retry") => "重试",
         ("en-US", "loading") => "Loading",
         ("en-US", "empty") => "No data",
         ("en-US", "confirm") => "Confirm",
         ("en-US", "cancel") => "Cancel",
+        ("en-US", "select-date") => "Select date",
+        ("en-US", "select-time") => "Select time",
+        ("en-US", "input-placeholder") => "Enter a value",
+        ("en-US", "select-placeholder") => "Select an option",
+        ("en-US", "tag-input-placeholder") => "Enter and press Enter",
+        ("en-US", "transfer-source") => "Source",
+        ("en-US", "transfer-target") => "Target",
+        ("en-US", "choose-file") => "Choose file",
+        ("en-US", "upload-ready") => "Ready",
+        ("en-US", "upload-uploading") => "Uploading",
+        ("en-US", "upload-success") => "Completed",
+        ("en-US", "upload-failed") => "Failed",
+        ("en-US", "upload-canceled") => "Canceled",
+        ("en-US", "retry") => "Retry",
         (_, "loading") => "Loading",
         (_, "empty") => "No data",
         (_, "confirm") => "Confirm",
         (_, "cancel") => "Cancel",
-        _ => "",
+        (_, "select-date") => "Select date",
+        (_, "select-time") => "Select time",
+        (_, "input-placeholder") => "Enter a value",
+        (_, "select-placeholder") => "Select an option",
+        (_, "tag-input-placeholder") => "Enter and press Enter",
+        (_, "transfer-source") => "Source",
+        (_, "transfer-target") => "Target",
+        (_, "choose-file") => "Choose file",
+        (_, "upload-ready") => "Ready",
+        (_, "upload-uploading") => "Uploading",
+        (_, "upload-success") => "Completed",
+        (_, "upload-failed") => "Failed",
+        (_, "upload-canceled") => "Canceled",
+        (_, "retry") => "Retry",
+        _ => key,
     }
+}
+
+/// Resolves an application override, then built-in copy, then the stable key.
+pub fn text(cx: &App, key: &'static str) -> SharedString {
+    if let Some(global) = cx.try_global::<TDesignLocaleGlobal>() {
+        if let Some(value) = global.messages.get(key) {
+            return value.to_owned().into();
+        }
+        return builtin(&global.locale, key).into();
+    }
+    builtin(&Locale::default(), key).into()
 }

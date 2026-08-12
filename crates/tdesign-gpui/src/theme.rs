@@ -1,6 +1,6 @@
 //! Theme tokens and runtime appearance configuration.
 
-use gpui::{Global, Hsla, WindowAppearance, hsla, rgb};
+use gpui::{Global, Hsla, WindowAppearance, rgb};
 use std::collections::BTreeMap;
 
 use crate::generated_theme_tokens::TDESIGN_WEB_TOKENS;
@@ -173,15 +173,19 @@ impl TDesignTheme {
             ThemeMode::Light => false,
         };
         if dark {
-            let mut tokens = ThemeTokens::dark();
+            let mut tokens = if matches!(self.mode, ThemeMode::Dark) {
+                self.tokens.clone()
+            } else {
+                ThemeTokens::dark()
+            };
             apply_overrides(&mut tokens, &self.overrides);
             tokens
-        } else if matches!(self.mode, ThemeMode::Light)
-            && self.overrides == ThemeOverrides::default()
-        {
-            self.tokens.clone()
         } else {
-            let mut tokens = ThemeTokens::light();
+            let mut tokens = if matches!(self.mode, ThemeMode::Light) {
+                self.tokens.clone()
+            } else {
+                ThemeTokens::light()
+            };
             apply_overrides(&mut tokens, &self.overrides);
             tokens
         }
@@ -207,8 +211,3 @@ fn apply_overrides(tokens: &mut ThemeTokens, overrides: &ThemeOverrides) {
 #[derive(Clone, Debug)]
 pub struct TDesignThemeGlobal(pub TDesignTheme);
 impl Global for TDesignThemeGlobal {}
-
-/// A transparent color useful for overlay surfaces.
-pub fn transparent() -> gpui::Hsla {
-    hsla(0.0, 0.0, 0.0, 0.0)
-}

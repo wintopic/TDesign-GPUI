@@ -103,6 +103,9 @@ impl AutoCompleteState {
 
     /// Selects an enabled option.
     pub fn select(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if self.disabled {
+            return false;
+        }
         let Some(option) = self
             .options
             .iter()
@@ -198,7 +201,7 @@ impl AutoCompleteState {
 #[derive(IntoElement)]
 pub struct AutoComplete {
     state: Entity<AutoCompleteState>,
-    placeholder: SharedString,
+    placeholder: Option<SharedString>,
     on_select: Option<StringHandler>,
 }
 
@@ -207,14 +210,14 @@ impl AutoComplete {
     pub fn new(state: Entity<AutoCompleteState>) -> Self {
         Self {
             state,
-            placeholder: "请输入".into(),
+            placeholder: None,
             on_select: None,
         }
     }
 
     /// Sets empty-query placeholder text.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
-        self.placeholder = placeholder.into();
+        self.placeholder = Some(placeholder.into());
         self
     }
 
@@ -228,7 +231,9 @@ impl AutoComplete {
 impl RenderOnce for AutoComplete {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let input_entity = self.state.read(cx).input.clone();
-        let placeholder = self.placeholder.clone();
+        let placeholder = self
+            .placeholder
+            .unwrap_or_else(|| crate::locale::text(cx, "input-placeholder"));
         let disabled = self.state.read(cx).disabled;
         let _ = input_entity.update(cx, |input, cx| {
             let changed = input.disabled != disabled || input.placeholder != placeholder;
@@ -356,7 +361,7 @@ impl RenderOnce for AutoComplete {
                         cx.stop_propagation();
                         key_entity.update(cx, |state, cx| state.move_highlight(-1, cx));
                     }
-                    "enter" | "space" => {
+                    "enter" => {
                         cx.stop_propagation();
                         let selected = key_entity.update(cx, |state, cx| {
                             if state.open {
@@ -550,7 +555,7 @@ fn collect_enabled_cascader_keys(options: &[CascaderOption], keys: &mut Vec<Stri
 #[derive(IntoElement)]
 pub struct Cascader {
     state: Entity<CascaderState>,
-    placeholder: SharedString,
+    placeholder: Option<SharedString>,
     on_change: Option<Arc<dyn Fn(&[String], &mut Window, &mut App)>>,
 }
 
@@ -559,14 +564,14 @@ impl Cascader {
     pub fn new(state: Entity<CascaderState>) -> Self {
         Self {
             state,
-            placeholder: "请选择".into(),
+            placeholder: None,
             on_change: None,
         }
     }
 
     /// Sets placeholder text.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
-        self.placeholder = placeholder.into();
+        self.placeholder = Some(placeholder.into());
         self
     }
 
@@ -608,6 +613,7 @@ impl RenderOnce for Cascader {
         let path = state.path.clone();
         let label = if path.is_empty() {
             self.placeholder
+                .unwrap_or_else(|| crate::locale::text(cx, "select-placeholder"))
         } else {
             path.iter()
                 .filter_map(|key| label_for(&state.options, key))
@@ -722,7 +728,7 @@ impl RenderOnce for Cascader {
                         cx.stop_propagation();
                         key_entity.update(cx, |state, cx| state.move_highlight(-1, cx));
                     }
-                    "enter" | "space" => {
+                    "enter" => {
                         cx.stop_propagation();
                         let path = key_entity.update(cx, |state, cx| {
                             if state.open {
@@ -1082,6 +1088,7 @@ impl RenderOnce for Form {
             .collect::<Vec<_>>();
         let submit = self.submit_label.map(|label| {
             let handler = self.on_submit;
+            let submit_state = self.state.clone();
             div()
                 .id(entity_id("tdesign-form-submit", &self.state))
                 .flex()
@@ -1099,7 +1106,8 @@ impl RenderOnce for Form {
                     label
                 })
                 .on_click(move |_, window, cx| {
-                    if !disabled && !submitting {
+                    let state = submit_state.read(cx);
+                    if !state.disabled && !state.submitting {
                         if let Some(handler) = &handler {
                             handler(window, cx);
                         }
@@ -1284,7 +1292,7 @@ impl TagInputState {
 #[derive(IntoElement)]
 pub struct TagInput {
     state: Entity<TagInputState>,
-    placeholder: SharedString,
+    placeholder: Option<SharedString>,
     on_change: Option<Arc<dyn Fn(&[SharedString], &mut Window, &mut App)>>,
 }
 
@@ -1293,14 +1301,14 @@ impl TagInput {
     pub fn new(state: Entity<TagInputState>) -> Self {
         Self {
             state,
-            placeholder: "请输入并确认".into(),
+            placeholder: None,
             on_change: None,
         }
     }
 
     /// Sets placeholder text.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
-        self.placeholder = placeholder.into();
+        self.placeholder = Some(placeholder.into());
         self
     }
 
@@ -1318,7 +1326,9 @@ impl RenderOnce for TagInput {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let input_entity = self.state.read(cx).input.clone();
         let disabled = self.state.read(cx).disabled;
-        let placeholder = self.placeholder.clone();
+        let placeholder = self
+            .placeholder
+            .unwrap_or_else(|| crate::locale::text(cx, "tag-input-placeholder"));
         let _ = input_entity.update(cx, |input, cx| {
             let changed = input.disabled != disabled || input.placeholder != placeholder;
             input.disabled = disabled;
@@ -1350,16 +1360,20 @@ impl RenderOnce for TagInput {
                     .rounded_sm()
                     .bg(gpui::rgb(0xf3f3f3))
                     .child(tag)
-                    .child("×")
-                    .on_click(move |_, window, cx| {
-                        let removed = entity.update(cx, |state, cx| state.remove(index, cx));
-                        if removed {
-                            if let Some(handler) = &handler {
-                                let tags = entity.read(cx).tags.clone();
-                                handler(&tags, window, cx);
-                            }
-                        }
-                    })
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("tag-input-remove-{index}")))
+                            .child("×")
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                let removed =
+                                    entity.update(cx, |state, cx| state.remove(index, cx));
+                                if removed && let Some(handler) = &handler {
+                                    let tags = entity.read(cx).tags.clone();
+                                    handler(&tags, window, cx);
+                                }
+                            }),
+                    )
                     .into_any_element()
             })
             .collect::<Vec<_>>();
@@ -1643,10 +1657,11 @@ impl SelectInputState {
 
     /// Selects or toggles an enabled key.
     pub fn select(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        if !self
-            .options
-            .iter()
-            .any(|option| option.key == key && !option.disabled)
+        if self.disabled
+            || !self
+                .options
+                .iter()
+                .any(|option| option.key == key && !option.disabled)
         {
             return false;
         }
@@ -1793,7 +1808,7 @@ impl SelectInputState {
 #[derive(IntoElement)]
 pub struct SelectInput {
     state: Entity<SelectInputState>,
-    placeholder: SharedString,
+    placeholder: Option<SharedString>,
     on_change: Option<Arc<dyn Fn(&[String], &mut Window, &mut App)>>,
 }
 
@@ -1802,14 +1817,14 @@ impl SelectInput {
     pub fn new(state: Entity<SelectInputState>) -> Self {
         Self {
             state,
-            placeholder: "请选择".into(),
+            placeholder: None,
             on_change: None,
         }
     }
 
     /// Sets placeholder text.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
-        self.placeholder = placeholder.into();
+        self.placeholder = Some(placeholder.into());
         self
     }
 
@@ -1827,7 +1842,9 @@ impl RenderOnce for SelectInput {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let input_entity = self.state.read(cx).input.clone();
         let disabled = self.state.read(cx).disabled;
-        let placeholder = self.placeholder.clone();
+        let placeholder = self
+            .placeholder
+            .unwrap_or_else(|| crate::locale::text(cx, "select-placeholder"));
         let _ = input_entity.update(cx, |input, cx| {
             let changed = input.disabled != disabled || input.placeholder != placeholder;
             input.disabled = disabled;
@@ -1981,7 +1998,7 @@ impl RenderOnce for SelectInput {
                         cx.stop_propagation();
                         key_entity.update(cx, |state, cx| state.move_highlight(-1, cx));
                     }
-                    "enter" | "space" => {
+                    "enter" => {
                         cx.stop_propagation();
                         let selected = key_entity.update(cx, |state, cx| {
                             if state.open {
@@ -2241,6 +2258,8 @@ impl RenderOnce for Transfer {
         let right_handler = self.on_change.clone();
         let left_handler = self.on_change;
         let key_entity = self.state.clone();
+        let source_title = crate::locale::text(cx, "transfer-source");
+        let target_title = crate::locale::text(cx, "transfer-target");
         div()
             .id(entity_id("tdesign-transfer", &self.state))
             .track_focus(&focus)
@@ -2248,7 +2267,7 @@ impl RenderOnce for Transfer {
             .items_center()
             .gap_3()
             .when(disabled, |this| this.opacity(0.5))
-            .child(transfer_panel("源列表", source_items))
+            .child(transfer_panel(source_title, source_items))
             .child(
                 div()
                     .flex()
@@ -2297,7 +2316,7 @@ impl RenderOnce for Transfer {
                             }),
                     ),
             )
-            .child(transfer_panel("目标列表", target_items))
+            .child(transfer_panel(target_title, target_items))
             .on_key_down(move |event, _, cx| {
                 if key_entity.read(cx).disabled {
                     return;
@@ -2351,7 +2370,7 @@ fn transfer_row(
         .into_any_element()
 }
 
-fn transfer_panel(title: &'static str, items: Vec<AnyElement>) -> impl IntoElement {
+fn transfer_panel(title: impl Into<SharedString>, items: Vec<AnyElement>) -> impl IntoElement {
     div()
         .w(px(180.))
         .h(px(240.))
@@ -2365,7 +2384,7 @@ fn transfer_panel(title: &'static str, items: Vec<AnyElement>) -> impl IntoEleme
                 .bg(gpui::rgb(0xf3f3f3))
                 .border_b_1()
                 .border_color(gpui::rgb(0xe7e7e7))
-                .child(title),
+                .child(title.into()),
         )
         .child(
             div()
@@ -2514,7 +2533,7 @@ fn collect_enabled_keys(nodes: &[TreeNode], keys: &mut Vec<String>) {
 #[derive(IntoElement)]
 pub struct TreeSelect {
     state: Entity<TreeSelectState>,
-    placeholder: SharedString,
+    placeholder: Option<SharedString>,
     on_change: Option<StringHandler>,
 }
 
@@ -2523,14 +2542,14 @@ impl TreeSelect {
     pub fn new(state: Entity<TreeSelectState>) -> Self {
         Self {
             state,
-            placeholder: "请选择".into(),
+            placeholder: None,
             on_change: None,
         }
     }
 
     /// Sets placeholder text.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
-        self.placeholder = placeholder.into();
+        self.placeholder = Some(placeholder.into());
         self
     }
 
@@ -2562,10 +2581,13 @@ impl RenderOnce for TreeSelect {
         }
         let state = self.state.read(cx);
         let selected = state.selected.clone();
+        let placeholder = self
+            .placeholder
+            .unwrap_or_else(|| crate::locale::text(cx, "select-placeholder"));
         let display = selected
             .as_deref()
             .and_then(|key| label(&state.roots, key))
-            .unwrap_or(self.placeholder);
+            .unwrap_or(placeholder);
         let open = state.open;
         let highlighted = state.highlighted.clone();
         let disabled = state.disabled;

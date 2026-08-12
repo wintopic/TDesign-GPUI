@@ -148,7 +148,11 @@ impl Progress {
     /// Creates progress with a percentage clamped to 0..=100.
     pub fn new(percentage: f32) -> Self {
         Self {
-            percentage: percentage.clamp(0., 100.),
+            percentage: if percentage.is_finite() {
+                percentage.clamp(0., 100.)
+            } else {
+                0.
+            },
             status: ProgressStatus::Default,
             circular: false,
             show_label: true,
@@ -293,11 +297,25 @@ impl QRCode {
 
 impl RenderOnce for QRCode {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let code = QrCode::encode_text(&self.value, self.level).unwrap_or_else(|_| {
-            QrCode::encode_text("TDesign", QrCodeEcc::Low).expect("fallback QR")
-        });
+        let Ok(code) = QrCode::encode_text(&self.value, self.level) else {
+            return div()
+                .w(self.size)
+                .h(self.size)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .border_1()
+                .border_color(gpui::rgb(0xd54941))
+                .bg(self.background)
+                .text_color(gpui::rgb(0xd54941))
+                .child("Invalid QR data")
+                .into_any_element();
+        };
         let module_count = code.size() as usize;
-        let module = self.size / module_count as f32;
+        const QUIET_ZONE: usize = 4;
+        let grid_size = module_count + QUIET_ZONE * 2;
+        let module = self.size / grid_size as f32;
         let mut cells = Vec::new();
         for y in 0..module_count {
             for x in 0..module_count {
@@ -305,8 +323,8 @@ impl RenderOnce for QRCode {
                     cells.push(
                         div()
                             .absolute()
-                            .left(module * x as f32)
-                            .top(module * y as f32)
+                            .left(module * (x + QUIET_ZONE) as f32)
+                            .top(module * (y + QUIET_ZONE) as f32)
                             .w(module)
                             .h(module)
                             .bg(self.foreground)
@@ -322,6 +340,7 @@ impl RenderOnce for QRCode {
             .h(self.size)
             .bg(self.background)
             .children(cells)
+            .into_any_element()
     }
 }
 
@@ -586,9 +605,16 @@ impl Swiper {
 impl RenderOnce for Swiper {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state.read(cx);
-        let index = state.index;
         let focus = state.focus_handle.clone();
         let count = self.items.len();
+        let index = if count == 0 { 0 } else { state.index % count };
+        if state.count != count || state.index != index {
+            let _ = self.state.update(cx, |state, cx| {
+                state.count = count;
+                state.index = index;
+                cx.notify();
+            });
+        }
         let current = self.items.into_iter().nth(index);
         let previous = self.state.clone();
         let next = self.state.clone();

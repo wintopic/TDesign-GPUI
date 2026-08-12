@@ -12,14 +12,25 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tdesign_gpui::{
-    AutoCompleteState, CalendarState, CascaderOption, CascaderState, DatePickerState, DropdownItem,
-    DropdownState, InputEvent, InputState, List, ListDelegate, MenuItem, MenuState, OverlayKind,
+    AutoCompleteState, CalendarState, CascaderOption, CascaderState, CollapseItem, CollapseState,
+    DatePickerState, DropdownItem, DropdownState, Input, InputEvent, InputState, List,
+    ListDelegate, Locale, LocaleMessages, MenuItem, MenuState, NumberState, OverlayKind,
     OverlayState, PaginationState, RangeInputState, SelectInputState, SelectOption, SelectState,
-    SliderState, TDesignConfig, TDesignConfigState, TabItem, Table, TableDelegate, TabsState,
-    TagInputState, Textarea, TimePickerState, ToggleState, TransferItem, TransferState, TreeNode,
-    TreeSelectState, TreeState, Upload, UploadBackend, UploadEvent, UploadProgress, UploadState,
-    UploadStatus,
+    SliderState, TDesignConfig, TDesignConfigState, TDesignLocaleGlobal, TabItem, Table,
+    TableDelegate, TabsState, TagInputState, Textarea, TimePickerState, ToggleState, TransferItem,
+    TransferState, TreeNode, TreeSelectState, TreeState, Upload, UploadBackend, UploadEvent,
+    UploadProgress, UploadState, UploadStatus, ValueChange,
 };
+
+struct InputHarness {
+    state: gpui::Entity<InputState>,
+}
+
+impl Render for InputHarness {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Input::new(self.state.clone())
+    }
+}
 
 struct TextareaHarness {
     state: gpui::Entity<InputState>,
@@ -122,6 +133,43 @@ fn input_value_change_is_typed(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn input_unchanged_assignment_preserves_selection(cx: &mut TestAppContext) {
+    let state = cx.update(|app| InputState::new(app, "before"));
+    state.update(cx, |state, cx| {
+        state.set_selection(1..3, cx);
+        let change = state.set_value("before", cx);
+        assert_eq!(change.previous, change.current);
+    });
+    assert_eq!(state.read_with(cx, |state, _| state.selection()), 1..3);
+}
+
+#[gpui::test]
+fn disabled_input_rejects_native_text_and_single_line_crlf_is_one_space(cx: &mut TestAppContext) {
+    let disabled = cx.update(|app| InputState::new(app, "locked"));
+    disabled.update(cx, |state, _| state.disabled = true);
+    let (_view, window) = cx.add_window_view(|_window, _cx| InputHarness {
+        state: disabled.clone(),
+    });
+    window.update(|window, cx| disabled.read(cx).focus_handle.focus(window));
+    window.simulate_input("changed");
+    assert_eq!(
+        disabled.read_with(window, |state, _| state.value.clone()),
+        SharedString::from("locked")
+    );
+
+    let input = cx.update(|app| InputState::new(app, ""));
+    let (_view, window) = cx.add_window_view(|_window, _cx| InputHarness {
+        state: input.clone(),
+    });
+    window.update(|window, cx| input.read(cx).focus_handle.focus(window));
+    window.simulate_input("left\r\nright");
+    assert_eq!(
+        input.read_with(window, |state, _| state.value.clone()),
+        SharedString::from("left right")
+    );
+}
+
+#[gpui::test]
 async fn input_emits_typed_events_for_text_mutations(cx: &mut TestAppContext) {
     let state = cx.update(|app| InputState::new(app, "before"));
     let mut events = cx.events::<InputEvent, _>(&state);
@@ -177,11 +225,99 @@ fn config_state_supports_runtime_updates(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn locale_resolves_builtin_and_application_overrides(cx: &mut TestAppContext) {
+    cx.update(|app| {
+        app.set_global(TDesignLocaleGlobal {
+            locale: Locale::en_us(),
+            messages: Default::default(),
+        });
+        assert_eq!(
+            tdesign_gpui::locale_text(app, "select-date").as_ref(),
+            "Select date"
+        );
+        app.set_global(TDesignLocaleGlobal {
+            locale: Locale::en_us(),
+            messages: LocaleMessages::default().insert("select-date", "Pick a day"),
+        });
+        assert_eq!(
+            tdesign_gpui::locale_text(app, "select-date").as_ref(),
+            "Pick a day"
+        );
+        assert_eq!(
+            tdesign_gpui::locale_text(app, "transfer-source").as_ref(),
+            "Source"
+        );
+        assert_eq!(
+            tdesign_gpui::locale_text(app, "choose-file").as_ref(),
+            "Choose file"
+        );
+        assert_eq!(
+            tdesign_gpui::locale_text(app, "upload-uploading").as_ref(),
+            "Uploading"
+        );
+        assert_eq!(
+            tdesign_gpui::locale_text(app, "unknown-locale-key").as_ref(),
+            "unknown-locale-key"
+        );
+    });
+}
+
+#[test]
+fn value_change_reports_only_real_changes() {
+    assert!(
+        !ValueChange {
+            previous: 1,
+            current: 1,
+        }
+        .changed()
+    );
+    assert!(
+        ValueChange {
+            previous: 1,
+            current: 2,
+        }
+        .changed()
+    );
+}
+
+#[gpui::test]
+fn input_number_formats_step_precision_without_float_noise(cx: &mut TestAppContext) {
+    let state = cx.update(|app| NumberState::new(app, 0.0));
+    state.update(cx, |state, cx| {
+        state.step = 0.1;
+        state.increment(cx);
+        state.increment(cx);
+        state.increment(cx);
+        assert_eq!(state.formatted_value(), "0.3");
+        let unchanged = state.set_value(0.30000000000000004, cx);
+        assert!(!unchanged.changed());
+    });
+
+    let fractional_initial = cx.update(|app| NumberState::new(app, 0.5));
+    assert_eq!(
+        fractional_initial.read_with(cx, |state, _| state.formatted_value()),
+        "0.5"
+    );
+}
+
+#[gpui::test]
 fn toggles_transition_and_clear_indeterminate(cx: &mut TestAppContext) {
     let state = cx.update(|app| ToggleState::new(app, false));
     state.update(cx, |state, _| state.indeterminate = true);
     let event = state.update(cx, |state, cx| state.toggle(cx));
     assert_eq!((event.previous, event.current), (false, true));
+    assert!(!state.read_with(cx, |state, _| state.indeterminate));
+}
+
+#[gpui::test]
+fn radio_check_is_idempotent_and_clears_indeterminate(cx: &mut TestAppContext) {
+    let state = cx.update(|app| ToggleState::new(app, true));
+    let unchanged = state.update(cx, |state, cx| state.check(cx));
+    assert!(!unchanged.changed());
+
+    state.update(cx, |state, _| state.indeterminate = true);
+    let still_checked = state.update(cx, |state, cx| state.check(cx));
+    assert!(!still_checked.changed());
     assert!(!state.read_with(cx, |state, _| state.indeterminate));
 }
 
@@ -225,6 +361,23 @@ fn date_picker_respects_range_and_keyboard_selection(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn date_picker_rejects_out_of_range_assignment_without_clearing_value(cx: &mut TestAppContext) {
+    let selected = NaiveDate::from_ymd_opt(2026, 8, 12).unwrap();
+    let state = cx.update(|app| DatePickerState::new(app, Some(selected)));
+    state.update(cx, |state, cx| {
+        state.max = Some(selected);
+        state.open(cx);
+        let rejected = state.set_value(Some(NaiveDate::from_ymd_opt(2026, 8, 13).unwrap()), cx);
+        assert_eq!(rejected.current, Some(selected));
+        assert!(state.open);
+        state.move_highlight(1, cx);
+        assert_eq!(state.highlighted, Some(selected));
+        state.shift_month(i32::MAX, cx);
+    });
+    assert_eq!(state.read_with(cx, |state, _| state.value), Some(selected));
+}
+
+#[gpui::test]
 fn calendar_range_and_keyboard_selection_are_consistent(cx: &mut TestAppContext) {
     let selected = NaiveDate::from_ymd_opt(2026, 8, 12).unwrap();
     let state = cx.update(|app| CalendarState::new(app, Some(selected)));
@@ -264,6 +417,34 @@ fn time_picker_steps_and_clamps_to_range(cx: &mut TestAppContext) {
             Some(NaiveTime::from_hms_opt(23, 58, 0).unwrap())
         );
     });
+}
+
+#[gpui::test]
+fn time_picker_step_keeps_popup_open_and_enters_configured_range(cx: &mut TestAppContext) {
+    let min = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+    let state = cx.update(|app| TimePickerState::new(app, None));
+    state.update(cx, |state, cx| {
+        state.min = Some(min);
+        state.max = Some(NaiveTime::from_hms_opt(17, 0, 0).unwrap());
+        state.step = 60;
+        state.open(cx);
+        let change = state.increment(cx);
+        assert_eq!(change.current, Some(min));
+        assert!(state.open);
+        let rejected = state.set_value(Some(NaiveTime::from_hms_opt(8, 0, 0).unwrap()), cx);
+        assert_eq!(rejected.current, Some(min));
+        assert!(state.open);
+    });
+}
+
+#[gpui::test]
+fn collapse_accordion_can_close_the_current_panel(cx: &mut TestAppContext) {
+    let mut item = CollapseItem::new("one", "One", gpui::div());
+    item.expanded = true;
+    let items = vec![item];
+    let state = cx.update(|app| CollapseState::new(app, &items));
+    state.update(cx, |state, cx| state.toggle_accordion("one", cx));
+    assert!(!state.read_with(cx, |state, _| state.expanded.contains("one")));
 }
 
 #[gpui::test]
@@ -497,7 +678,7 @@ fn dropdown_keyboard_activation_and_escape(cx: &mut TestAppContext) {
         Some("second".to_owned())
     );
     state.update(cx, |state, cx| state.toggle(cx));
-    state.update(cx, |state, cx| state.open = true);
+    state.update(cx, |state, _| state.open = true);
     state.update(cx, |state, cx| {
         state.open = false;
         cx.notify();
@@ -719,6 +900,77 @@ fn overlay_stack_orders_and_tracks_modal_state(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn transient_overlay_removal_is_targeted(cx: &mut TestAppContext) {
+    let overlays = cx.update(OverlayState::new);
+    let dialog = overlays.update(cx, |state, cx| {
+        state.show(
+            OverlayKind::Dialog,
+            true,
+            300,
+            None,
+            |_, _| gpui::div().into_any_element(),
+            cx,
+        )
+    });
+    let message = overlays.update(cx, |state, cx| {
+        state.show(
+            OverlayKind::Message,
+            false,
+            500,
+            None,
+            |_, _| gpui::div().into_any_element(),
+            cx,
+        )
+    });
+    assert_eq!(
+        overlays.read_with(cx, |state, _| state.top_id()),
+        Some(message)
+    );
+    assert!(overlays.update(cx, |state, cx| state.remove(message, cx)));
+    assert_eq!(
+        overlays.read_with(cx, |state, _| state.top_id()),
+        Some(dialog)
+    );
+}
+
+#[gpui::test]
+async fn single_upload_replacement_emits_removed_before_selection(cx: &mut TestAppContext) {
+    let state = cx.update(UploadState::new);
+    let first = PathBuf::from("first.txt");
+    let second = PathBuf::from("second.txt");
+    state.update(cx, |state, cx| {
+        assert_eq!(
+            state.add_files([first.clone()], false, cx),
+            vec![first.clone()]
+        );
+    });
+    let mut events = cx.events::<UploadEvent, _>(&state);
+    state.update(cx, |state, cx| {
+        assert_eq!(
+            state.add_files([second.clone()], false, cx),
+            vec![second.clone()]
+        );
+    });
+    assert_eq!(
+        events.next().await,
+        Some(UploadEvent::Removed {
+            path: first.clone(),
+        })
+    );
+    assert_eq!(
+        events.next().await,
+        Some(UploadEvent::FilesSelected {
+            paths: vec![second.clone()],
+        })
+    );
+    assert_eq!(state.read_with(cx, |state, _| state.files.len()), 1);
+    assert_eq!(
+        state.read_with(cx, |state, _| state.status(&second).cloned()),
+        Some(UploadStatus::Ready)
+    );
+}
+
+#[gpui::test]
 async fn upload_success_emits_progress_and_completes(cx: &mut TestAppContext) {
     let state = cx.update(|app| UploadState::new(app));
     let mut events = cx.events::<UploadEvent, _>(&state);
@@ -779,6 +1031,51 @@ async fn upload_failure_can_be_retried_and_cancelled(cx: &mut TestAppContext) {
     assert_eq!(
         state.read_with(cx, |state, _| state.status(&path).cloned()),
         Some(UploadStatus::Canceled)
+    );
+}
+
+#[gpui::test]
+fn stale_upload_attempt_cannot_overwrite_a_retry(cx: &mut TestAppContext) {
+    let state = cx.update(UploadState::new);
+    let path = PathBuf::from("same-path.bin");
+    state.update(cx, |state, cx| {
+        assert_eq!(
+            state.add_files([path.clone()], false, cx),
+            vec![path.clone()]
+        );
+    });
+
+    let first_attempt = state.update(cx, |state, cx| {
+        state.begin_attempt(&path, cx).expect("first attempt")
+    });
+    assert!(state.update(cx, |state, cx| state.cancel_file(&path, cx)));
+    assert!(first_attempt.is_cancelled());
+    assert!(state.update(cx, |state, cx| state.retry_file(&path, cx)));
+    let second_attempt = state.update(cx, |state, cx| {
+        state.begin_attempt(&path, cx).expect("second attempt")
+    });
+
+    state.update(cx, |state, cx| {
+        state.set_attempt_progress(&first_attempt, UploadProgress::new(99, Some(100)), cx);
+        state.finish_attempt_success(&first_attempt, "https://stale.example/file", cx);
+        state.finish_attempt_failure(&first_attempt, "stale failure", cx);
+    });
+    assert_eq!(
+        state.read_with(cx, |state, _| state.status(&path).cloned()),
+        Some(UploadStatus::Uploading)
+    );
+    assert_eq!(
+        state.read_with(cx, |state, _| state.progress(&path)),
+        Some(UploadProgress::new(0, None))
+    );
+
+    state.update(cx, |state, cx| {
+        state.set_attempt_progress(&second_attempt, UploadProgress::new(5, Some(10)), cx);
+        state.finish_attempt_success(&second_attempt, "https://current.example/file", cx);
+    });
+    assert_eq!(
+        state.read_with(cx, |state, _| state.status(&path).cloned()),
+        Some(UploadStatus::Success("https://current.example/file".into()))
     );
 }
 

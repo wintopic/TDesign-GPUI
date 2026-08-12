@@ -33,6 +33,13 @@ TDesign GPUI 是面向
 但 `0.x` 仍可能调整 API，固定参考版本的完整 macOS 视觉验收和所有交互组件的
 AccessKit 全量验收仍是进入 `1.0` 前的工作。
 
+Parity 矩阵证明锁定的上游 API 快照已被完整分类，但它本身不能证明每个 Rust 方法
+都已达到视觉与行为等价。`0.1.x` 仍在推进全组件 token 消费、带锚点的 deferred
+浮层和 outside-click 协调、模态焦点陷阱、`InputNumber` 文本编辑、`RangeInput`
+变更事件、完整 AccessKit、视觉基准，以及 71 个组件的真实 Story 覆盖。主题与语言
+目前通过 GPUI 应用全局状态解析，因此需要多个窗口同时使用不同主题的场景，在根级
+上下文完成前仍应视为实验能力。
+
 当前范围包括：
 
 - 71 个 TDesign React PC 组件表面和原生 `ConfigProvider` 映射
@@ -71,7 +78,7 @@ Wayland/X11 后端。最新要求请查看
 ## 快速开始
 
 下面是可直接运行的原生窗口，包含 `TDesignRoot`、`Button`、`Input` 和内嵌图标。
-同一份代码会作为 [`examples/basic.rs`](crates/tdesign-gpui/examples/basic.rs) 参与编译。
+仓库中的 [`examples/basic.rs`](crates/tdesign-gpui/examples/basic.rs) 提供了持续编译的对应示例。
 
 ```rust
 use gpui::{App, Application, Context, Render, Window, WindowOptions, div, prelude::*};
@@ -277,7 +284,7 @@ fn list() -> List {
 
 | Feature | 默认 | 作用 |
 | --- | --- | --- |
-| `full-icons` | 是 | 内嵌全部 2,354 个 SVG 图标；关闭默认 feature 时只内嵌组件必需的核心图标。 |
+| `full-icons` | 是 | 内嵌全部 2,354 个 SVG 图标；关闭默认 feature 时只内嵌文档列出的核心图标子集。 |
 | `serde` | 否 | 为支持的公共配置、主题、语言和图标类型增加 Serde。 |
 
 最小图标构建：
@@ -321,13 +328,15 @@ icon 等可安全生成的变化才可能标记为 `sync-safe`；删除、重命
 
 ```sh
 cargo fmt --all -- --check
-cargo check --workspace --all-targets --no-default-features
-cargo check --workspace --all-targets --all-features
-cargo test --workspace
-cargo doc --workspace --no-deps
+cargo check -p tdesign-gpui --all-targets --no-default-features --locked
+cargo check -p tdesign-gpui-assets --all-targets --no-default-features --locked
+cargo check --workspace --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked
+cargo test --workspace --locked
+cargo doc --workspace --no-deps --locked
 cargo run -p tdesign-gpui-story
-cargo xtask parity check
-cargo xtask release check
+cargo run -p xtask --locked -- parity check
+cargo run -p xtask --locked -- release check
 ```
 
 进行较大修改前请阅读[架构说明](docs/architecture.md)、

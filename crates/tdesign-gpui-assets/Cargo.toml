@@ -12,7 +12,17 @@ homepage.workspace = true
 authors.workspace = true
 readme = "README.md"
 build = "build.rs"
-include = ["src/**", "assets/**", "build.rs", "README.md", "Cargo.toml", "LICENSE-TDESIGN"]
+include = [
+    "src/**",
+    "assets/**",
+    "build.rs",
+    "README.md",
+    "Cargo.toml",
+    "LICENSE-TDESIGN",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "THIRD_PARTY_NOTICES.md",
+]
 
 [features]
 default = ["full-icons"]

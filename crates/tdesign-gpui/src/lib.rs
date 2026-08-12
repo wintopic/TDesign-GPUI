@@ -65,6 +65,7 @@ pub use forms::*;
 pub use foundations::*;
 pub use generated_theme_tokens::{TDESIGN_WEB_TOKENS, UpstreamThemeToken};
 pub use interactive::*;
+pub use locale::text as locale_text;
 pub use locale::{Locale, LocaleMessages, TDesignLocaleGlobal};
 pub use navigation::*;
 pub use overlay::{OverlayId, OverlayKind, OverlayState};

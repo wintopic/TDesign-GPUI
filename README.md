@@ -36,6 +36,17 @@ its machine-readable parity records contain no unmapped upstream fields.
 However, `0.x` still means APIs may be refined, and full macOS reference-image
 validation plus exhaustive AccessKit acceptance remain work toward `1.0`.
 
+The parity matrix proves that the locked upstream API snapshot is fully
+classified; it does not by itself prove visual or behavioral equivalence for
+every Rust method. In `0.1.x`, complete token consumption across all components,
+anchored/deferred popup positioning with outside-click coordination, modal focus
+traps, editable text entry for `InputNumber`, `RangeInput` change events, full
+AccessKit coverage, visual baselines, and real stories for all 71 components are
+still active roadmap work. Theme and locale resolution currently use GPUI
+application globals, so applications needing independently themed simultaneous
+windows should treat that as an experimental scenario until root-scoped context
+lands.
+
 In scope:
 
 - 71 TDesign React PC component surfaces and native `ConfigProvider` mapping
@@ -78,7 +89,7 @@ current upstream requirements.
 ## Quick start
 
 This is a complete native window using `TDesignRoot`, `Button`, `Input`, and an
-embedded icon. The same source is compiled as
+embedded icon. A closely matching, continuously compiled version lives in
 [`examples/basic.rs`](crates/tdesign-gpui/examples/basic.rs).
 
 ```rust
@@ -293,7 +304,7 @@ Table, and Tree in one native application.
 
 | Feature | Default | Purpose |
 | --- | --- | --- |
-| `full-icons` | yes | Embeds all 2,354 SVG icons. Without default features, only component-required core icons are embedded. |
+| `full-icons` | yes | Embeds all 2,354 SVG icons. Without default features, only the documented core icon subset is embedded. |
 | `serde` | no | Adds Serde support to supported public configuration, theme, locale, and icon types. |
 
 Minimal icon build:
@@ -339,13 +350,15 @@ uses a temporary dependency override and never rewrites the stable manifest.
 
 ```sh
 cargo fmt --all -- --check
-cargo check --workspace --all-targets --no-default-features
-cargo check --workspace --all-targets --all-features
-cargo test --workspace
-cargo doc --workspace --no-deps
+cargo check -p tdesign-gpui --all-targets --no-default-features --locked
+cargo check -p tdesign-gpui-assets --all-targets --no-default-features --locked
+cargo check --workspace --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked
+cargo test --workspace --locked
+cargo doc --workspace --no-deps --locked
 cargo run -p tdesign-gpui-story
-cargo xtask parity check
-cargo xtask release check
+cargo run -p xtask --locked -- parity check
+cargo run -p xtask --locked -- release check
 ```
 
 See [Architecture](docs/architecture.md),

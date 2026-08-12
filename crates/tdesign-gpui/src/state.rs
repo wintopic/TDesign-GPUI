@@ -1,20 +1,21 @@
 //! Reusable GPUI entities and delegate contracts for stateful components.
 
-use futures::AsyncReadExt as _;
+use futures::{AsyncRead, AsyncReadExt as _};
 use gpui::{
     App, Bounds, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle,
     KeyDownEvent, Pixels, Point, ShapedLine, SharedString, Task, UTF16Selection, Window,
     WrappedLine, prelude::*, px,
 };
 use std::{
-    fs::File,
-    io::Read as _,
+    io::{Cursor, Error as IoError, Read},
     ops::Range,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    task::{Context as TaskContext, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -25,6 +26,13 @@ pub struct ValueChange<T> {
     pub previous: T,
     /// Current value.
     pub current: T,
+}
+
+impl<T: PartialEq> ValueChange<T> {
+    /// Returns whether the current value differs from the previous value.
+    pub fn changed(&self) -> bool {
+        self.previous != self.current
+    }
 }
 
 /// Events emitted by [`InputState`] for text mutations from builders, the
@@ -127,15 +135,19 @@ impl InputState {
         cx: &mut Context<Self>,
     ) -> ValueChange<SharedString> {
         let previous = self.value.clone();
+        if previous == value {
+            return ValueChange {
+                previous,
+                current: value,
+            };
+        }
         self.value = value;
         let cursor = self.value.len();
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range = None;
         self.last_multiline_layout = None;
-        if previous != self.value {
-            cx.notify();
-        }
+        cx.notify();
         if emit {
             self.emit_change(previous, cx)
         } else {
@@ -145,16 +157,23 @@ impl InputState {
             }
         }
     }
-    /// Sets placeholder text.
-    pub fn placeholder(mut self, value: impl Into<SharedString>) -> Self {
-        self.placeholder = value.into();
-        self
+    /// Updates placeholder text at runtime.
+    pub fn set_placeholder(&mut self, value: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let value = value.into();
+        if self.placeholder != value {
+            self.placeholder = value;
+            cx.notify();
+        }
     }
 
-    /// Enables or disables line breaks.
-    pub fn multiline(mut self, multiline: bool) -> Self {
-        self.multiline = multiline;
-        self
+    /// Enables or disables line breaks at runtime.
+    pub fn set_multiline(&mut self, multiline: bool, cx: &mut Context<Self>) {
+        if self.multiline != multiline {
+            self.multiline = multiline;
+            self.last_layout = None;
+            self.last_multiline_layout = None;
+            cx.notify();
+        }
     }
 
     /// Current byte-range selection.
@@ -385,12 +404,14 @@ impl InputState {
         cx: &mut Context<Self>,
     ) -> ValueChange<SharedString> {
         let previous = self.value.clone();
-        let text = if self.multiline {
-            text.to_owned()
-        } else {
-            text.replace(['\r', '\n'], " ")
-        };
+        if self.disabled {
+            return ValueChange {
+                previous: previous.clone(),
+                current: previous,
+            };
+        }
         let range = self.selected_range.clone();
+        let text = normalize_input_text(text, self.multiline, &self.value, range.start);
         let mut value = self.value.to_string();
         value.replace_range(range.clone(), &text);
         let cursor = range.start + text.len();
@@ -518,6 +539,9 @@ impl EntityInputHandler for InputState {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.marked_range = None;
     }
 
@@ -528,6 +552,9 @@ impl EntityInputHandler for InputState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -545,17 +572,16 @@ impl EntityInputHandler for InputState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let previous = self.value.clone();
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
             .or_else(|| self.marked_range.clone())
             .unwrap_or_else(|| self.selected_range.clone());
-        let text = if self.multiline {
-            new_text.to_owned()
-        } else {
-            new_text.replace(['\r', '\n'], " ")
-        };
+        let text = normalize_input_text(new_text, self.multiline, &self.value, range.start);
         let mut value = self.value.to_string();
         value.replace_range(range.clone(), &text);
         self.value = value.into();
@@ -618,9 +644,35 @@ impl EntityInputHandler for InputState {
             return Some(self.offset_to_utf16(offset));
         }
         let line = self.last_layout.as_ref()?;
-        let index = line.index_for_x(point.x - local.x)?;
+        let index = line.index_for_x(local.x)?;
         Some(self.offset_to_utf16(index))
     }
+}
+
+fn normalize_input_text(
+    text: &str,
+    multiline: bool,
+    value: &str,
+    insertion_start: usize,
+) -> String {
+    if multiline {
+        return text.to_owned();
+    }
+    let mut normalized = String::with_capacity(text.len());
+    let mut previous_was_line_break = false;
+    let follows_normalized_break = value[..insertion_start.min(value.len())].ends_with(' ');
+    for character in text.chars() {
+        if matches!(character, '\r' | '\n') {
+            if !previous_was_line_break && !(normalized.is_empty() && follows_normalized_break) {
+                normalized.push(' ');
+            }
+            previous_was_line_break = true;
+        } else {
+            normalized.push(character);
+            previous_was_line_break = false;
+        }
+    }
+    normalized
 }
 
 /// Returns a point relative to a multiline input for a UTF-8 byte offset.
@@ -767,10 +819,10 @@ impl UploadCancellation {
     }
 }
 
-/// Byte-level progress reported by an [`UploadBackend`].
+/// Byte-level progress reported while an [`UploadBackend`] consumes a request body.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct UploadProgress {
-    /// Bytes consumed from the local file.
+    /// Bytes consumed by the upload transport.
     pub uploaded_bytes: u64,
     /// Total local-file bytes, when known.
     pub total_bytes: Option<u64>,
@@ -801,7 +853,7 @@ pub struct UploadRequest {
     pub path: SharedString,
     /// Cooperative cancellation handle for this attempt.
     pub cancellation: UploadCancellation,
-    /// Expected local-file size, when known.
+    /// Expected file payload size, when known.
     pub total_bytes: Option<u64>,
     progress: Option<UploadProgressHandler>,
 }
@@ -909,12 +961,11 @@ impl UploadBackend for HttpUploadBackend {
             }
 
             let path = PathBuf::from(request.path.as_ref());
-            let total_bytes = request
-                .total_bytes
-                .or_else(|| std::fs::metadata(&path).ok().map(|metadata| metadata.len()));
+            let file_bytes = std::fs::metadata(&path)?.len();
+            let total_bytes = Some(file_bytes);
             let boundary = multipart_boundary();
-            let body =
-                multipart_body(&path, field_name.as_ref(), &boundary, total_bytes, &request)?;
+            let (body, content_length) =
+                multipart_body(&path, field_name.as_ref(), &boundary, file_bytes, &request)?;
             if request.cancellation.is_cancelled() {
                 anyhow::bail!("upload cancelled");
             }
@@ -926,12 +977,12 @@ impl UploadBackend for HttpUploadBackend {
                     "Content-Type",
                     format!("multipart/form-data; boundary={boundary}"),
                 )
-                .header("Content-Length", body.len().to_string());
+                .header("Content-Length", content_length.to_string());
             for (name, value) in headers {
                 builder = builder.header(name.as_ref(), value.as_ref());
             }
             let request_message = builder
-                .body(gpui::http_client::AsyncBody::from(body))
+                .body(gpui::http_client::AsyncBody::from_reader(body))
                 .map_err(anyhow::Error::from)?;
             let response = client.send(request_message).await?;
             let status = response.status();
@@ -979,42 +1030,107 @@ fn multipart_body(
     path: &Path,
     field_name: &str,
     boundary: &str,
-    total_bytes: Option<u64>,
+    file_bytes: u64,
     request: &UploadRequest,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<(MultipartReader, u64)> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("upload.bin")
-        .replace(['\r', '\n', '"'], "_");
+        .replace(['\r', '\n', '"', '\\'], "_");
     let field_name = field_name.replace(['\r', '\n', '"'], "_");
-    let mut body = Vec::new();
-    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{file_name}\"\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(format!("Content-Type: {}\r\n\r\n", content_type(path)).as_bytes());
+    let prefix = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"; filename=\"{file_name}\"\r\nContent-Type: {}\r\n\r\n",
+        content_type(path)
+    )
+    .into_bytes();
+    let suffix = format!("\r\n--{boundary}--\r\n").into_bytes();
+    let file = futures::io::AllowStdIo::new(std::fs::File::open(path)?);
+    let content_length = (prefix.len() as u64)
+        .saturating_add(file_bytes)
+        .saturating_add(suffix.len() as u64);
+    Ok((
+        MultipartReader::new(prefix, file, suffix, request.clone()),
+        content_length,
+    ))
+}
 
-    let mut file = File::open(path)?;
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut uploaded_bytes = 0_u64;
-    loop {
-        if request.cancellation.is_cancelled() {
-            anyhow::bail!("upload cancelled");
+struct MultipartReader {
+    prefix: Cursor<Vec<u8>>,
+    file: futures::io::AllowStdIo<std::fs::File>,
+    suffix: Cursor<Vec<u8>>,
+    request: UploadRequest,
+    uploaded_bytes: u64,
+    stage: MultipartStage,
+}
+
+#[derive(Clone, Copy)]
+enum MultipartStage {
+    Prefix,
+    File,
+    Suffix,
+    Done,
+}
+
+impl MultipartReader {
+    fn new(
+        prefix: Vec<u8>,
+        file: futures::io::AllowStdIo<std::fs::File>,
+        suffix: Vec<u8>,
+        request: UploadRequest,
+    ) -> Self {
+        Self {
+            prefix: Cursor::new(prefix),
+            file,
+            suffix: Cursor::new(suffix),
+            request,
+            uploaded_bytes: 0,
+            stage: MultipartStage::Prefix,
         }
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        body.extend_from_slice(&buffer[..read]);
-        uploaded_bytes = uploaded_bytes.saturating_add(read as u64);
-        request.report_progress(uploaded_bytes, total_bytes);
     }
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    Ok(body)
+
+    fn cancelled(&self) -> std::io::Result<()> {
+        if self.request.cancellation.is_cancelled() {
+            Err(IoError::other("upload cancelled"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl AsyncRead for MultipartReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buffer: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.cancelled()?;
+        loop {
+            let read = match self.stage {
+                MultipartStage::Prefix => Read::read(&mut self.prefix, buffer),
+                MultipartStage::File => match Pin::new(&mut self.file).poll_read(cx, buffer) {
+                    Poll::Ready(result) => result,
+                    Poll::Pending => return Poll::Pending,
+                },
+                MultipartStage::Suffix => Read::read(&mut self.suffix, buffer),
+                MultipartStage::Done => return Poll::Ready(Ok(0)),
+            }?;
+            if read > 0 {
+                if matches!(self.stage, MultipartStage::File) {
+                    self.uploaded_bytes = self.uploaded_bytes.saturating_add(read as u64);
+                    self.request
+                        .report_progress(self.uploaded_bytes, self.request.total_bytes);
+                }
+                return Poll::Ready(Ok(read));
+            }
+            self.stage = match self.stage {
+                MultipartStage::Prefix => MultipartStage::File,
+                MultipartStage::File => MultipartStage::Suffix,
+                MultipartStage::Suffix | MultipartStage::Done => MultipartStage::Done,
+            };
+            self.cancelled()?;
+        }
+    }
 }
 
 fn content_type(path: &Path) -> &'static str {

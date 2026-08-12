@@ -70,6 +70,17 @@ impl Icon {
 }
 impl RenderOnce for Icon {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if !crate::TDesignAssetSource::contains(self.name) {
+            return div()
+                .w(self.size)
+                .h(self.size)
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(self.color.unwrap_or_else(|| gpui::rgb(0xd54941).into()))
+                .child("?")
+                .into_any_element();
+        }
         let mut element = svg().path(self.name.asset_path()).w(self.size).h(self.size);
         let color = self.color.or_else(|| {
             cx.try_global::<TDesignThemeGlobal>()
@@ -78,7 +89,7 @@ impl RenderOnce for Icon {
         if let Some(color) = color {
             element = element.text_color(color);
         }
-        element
+        element.into_any_element()
     }
 }
 
@@ -160,22 +171,23 @@ impl Sizable for Button {
 }
 impl RenderOnce for Button {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tokens = cx
+            .try_global::<TDesignThemeGlobal>()
+            .map(|theme| theme.0.tokens.clone())
+            .unwrap_or_else(crate::ThemeTokens::light);
         let (bg, fg): (Hsla, Hsla) = match self.variant {
-            ButtonVariant::Primary => (gpui::rgb(0x0052d9).into(), gpui::white()),
-            ButtonVariant::Success => (gpui::rgb(0x2ba471).into(), gpui::white()),
-            ButtonVariant::Warning => (gpui::rgb(0xe37318).into(), gpui::white()),
-            ButtonVariant::Danger => (gpui::rgb(0xd54941).into(), gpui::white()),
-            ButtonVariant::Text => (gpui::transparent_black(), gpui::rgb(0x0052d9).into()),
-            ButtonVariant::Outline => (gpui::white(), gpui::rgb(0x0052d9).into()),
-            ButtonVariant::Base => (gpui::rgb(0xf3f3f3).into(), gpui::rgb(0x1f1f1f).into()),
+            ButtonVariant::Primary => (tokens.brand, gpui::white()),
+            ButtonVariant::Success => (tokens.success, gpui::white()),
+            ButtonVariant::Warning => (tokens.warning, gpui::white()),
+            ButtonVariant::Danger => (tokens.error, gpui::white()),
+            ButtonVariant::Text => (gpui::transparent_black(), tokens.brand),
+            ButtonVariant::Outline => (tokens.surface, tokens.brand),
+            ButtonVariant::Base => (tokens.surface, tokens.text),
         };
         let label = self.label.clone();
         let disabled = self.disabled;
         let id: SharedString = format!("tdesign-button-{}", self.label).into();
-        let brand = cx
-            .try_global::<TDesignThemeGlobal>()
-            .map(|theme| theme.0.tokens.brand)
-            .unwrap_or_else(|| gpui::rgb(0x0052d9).into());
+        let brand = tokens.brand;
         let mut button = div()
             .id(id)
             .focusable()
@@ -188,6 +200,9 @@ impl RenderOnce for Button {
             .rounded_sm()
             .bg(bg)
             .text_color(fg)
+            .when(self.variant == ButtonVariant::Base, |this| {
+                this.border_1().border_color(tokens.border)
+            })
             .when(self.variant == ButtonVariant::Outline, |this| {
                 this.border_1().border_color(brand)
             })

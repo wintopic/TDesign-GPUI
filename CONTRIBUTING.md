@@ -33,11 +33,13 @@ Clone and verify the workspace:
 git clone https://github.com/wintopic/TDesign-GPUI.git
 cd TDesign-GPUI
 cargo fmt --all -- --check
-cargo check --workspace --all-targets --no-default-features
-cargo check --workspace --all-targets --all-features
-cargo test --workspace
-cargo xtask parity check
-cargo xtask release check
+cargo check -p tdesign-gpui --all-targets --no-default-features --locked
+cargo check -p tdesign-gpui-assets --all-targets --no-default-features --locked
+cargo check --workspace --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked
+cargo test --workspace --locked
+cargo run -p xtask --locked -- parity check
+cargo run -p xtask --locked -- release check
 ```
 
 Launch the native gallery with:
@@ -54,6 +56,10 @@ cargo run -p tdesign-gpui-story
 - `xtask`: parity, upstream synchronization, generation, and release checks
 - `parity`: machine-readable React PC component/API mappings
 - `upstream`: generated review reports and synchronization metadata
+
+The workspace `default-members` intentionally exclude the non-published story
+and maintenance crates for normal library development. CI always uses
+`--workspace` when it needs complete story and `xtask` coverage.
 
 Read [docs/architecture.md](docs/architecture.md) before changing root,
 state/event, overlay, collection, theme, or generation contracts.

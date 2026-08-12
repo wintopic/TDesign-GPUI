@@ -33,7 +33,7 @@ struct UpstreamLock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Source {
+pub(crate) struct Source {
     name: String,
     repository: String,
     branch: String,
@@ -231,9 +231,6 @@ pub(crate) fn run(command: UpstreamCommand, options: Options) -> Result<()> {
         .clone()
         .unwrap_or_else(|| root().join("artifacts/upstream-report.json"));
     write_json_report(&report, &report_path)?;
-    if options.apply && report.overall == OverallStatus::ReviewRequired {
-        write_review_report(&report)?;
-    }
     print_report(&report, &report_path);
     Ok(())
 }
@@ -376,6 +373,9 @@ fn inspect_source(
         notes: Vec::new(),
     };
     if source.commit == target_commit {
+        let repository = ensure_cache(source, cache_root)?;
+        fetch_history(&repository, source, target_ref, target_commit)?;
+        ensure_object(&repository, target_commit, source)?;
         report
             .notes
             .push("locked commit already matches the requested ref".to_owned());
@@ -441,6 +441,32 @@ fn ensure_cache(source: &Source, cache_root: &Path) -> Result<PathBuf> {
         }
     }
     Ok(path)
+}
+
+/// Ensures the bare cache contains the exact commit pinned for one source.
+///
+/// Parity generation calls this directly so it works on a cold CI runner and
+/// does not depend on an earlier `upstream sync` command having populated the
+/// cache as a side effect.
+pub(crate) fn ensure_locked_source(
+    name: &str,
+    repository_url: &str,
+    branch: &str,
+    commit: &str,
+) -> Result<PathBuf> {
+    validate_commit(name, commit)?;
+    let source = Source {
+        name: name.to_owned(),
+        repository: repository_url.to_owned(),
+        branch: branch.to_owned(),
+        commit: commit.to_owned(),
+    };
+    let cache_root = root().join("upstream-cache");
+    fs::create_dir_all(&cache_root).with_context(|| format!("create {}", cache_root.display()))?;
+    let repository = ensure_cache(&source, &cache_root)?;
+    fetch_history(&repository, &source, branch, commit)?;
+    ensure_object(&repository, commit, &source)?;
+    Ok(repository)
 }
 
 fn fetch_history(
@@ -529,6 +555,8 @@ fn diff_changes(repository: &Path, old: &str, new: &str) -> Result<Vec<RawChange
     let output = git_output(
         Some(repository),
         [
+            "-c",
+            "core.quotePath=false",
             "diff",
             "--name-status",
             "--find-renames=50%",
@@ -700,10 +728,19 @@ fn classify_file(source: &str, change: &RawChange) -> (Disposition, String, Stri
             if is_theme_source(path)
                 && !matches!(change.kind, ChangeKind::Deleted | ChangeKind::Renamed)
             {
+                let disposition = if change.kind == ChangeKind::Added {
+                    Disposition::SyncSafe
+                } else {
+                    Disposition::ReviewRequired
+                };
                 (
-                    Disposition::SyncSafe,
+                    disposition,
                     "theme-token",
-                    "parseable theme token addition or replacement",
+                    if disposition == Disposition::SyncSafe {
+                        "parseable theme token addition"
+                    } else {
+                        "theme token value changes require visual review"
+                    },
                 )
             } else if path.starts_with("style/") {
                 (
@@ -721,11 +758,13 @@ fn classify_file(source: &str, change: &RawChange) -> (Disposition, String, Stri
         }
         "tdesign-icons" => {
             if path.starts_with("svg/") && path.ends_with(".svg") {
-                if matches!(change.kind, ChangeKind::Added | ChangeKind::Modified) {
+                if change.kind == ChangeKind::Added {
+                    (Disposition::SyncSafe, "icon", "sanitized SVG addition")
+                } else if change.kind == ChangeKind::Modified {
                     (
-                        Disposition::SyncSafe,
-                        "icon",
-                        "SVG addition or content replacement",
+                        Disposition::ReviewRequired,
+                        "icon-content",
+                        "SVG content replacement requires visual review",
                     )
                 } else {
                     (
@@ -956,6 +995,16 @@ fn apply_icons(repository: &Path, target_commit: &str, report: &SourceReport) ->
             continue;
         }
         let relative = change.path.strip_prefix("svg/").unwrap_or(&change.path);
+        let relative_path = Path::new(relative);
+        if relative_path.components().count() != 1
+            || relative.contains('/')
+            || relative.contains('\\')
+            || relative == "."
+            || relative == ".."
+            || relative_path.extension().and_then(|value| value.to_str()) != Some("svg")
+        {
+            bail!("unsafe icon path {:?}", change.path);
+        }
         let destination = root()
             .join("crates/tdesign-gpui-assets/assets/icons")
             .join(relative);
@@ -972,23 +1021,6 @@ fn apply_icons(repository: &Path, target_commit: &str, report: &SourceReport) ->
 
 fn validate_and_sanitize_svg(source: &str) -> Result<String> {
     let mut normalized = source.trim_start_matches('\u{feff}').replace("\r\n", "\n");
-    let lowered = normalized.to_ascii_lowercase();
-    for forbidden in [
-        "<script",
-        "javascript:",
-        "<foreignobject",
-        "xlink:href=\"http",
-        "href=\"http",
-        "xlink:href='http",
-        "href='http",
-    ] {
-        if lowered.contains(forbidden) {
-            bail!("unsafe SVG construct {forbidden:?}");
-        }
-    }
-    if !lowered.contains("<svg") {
-        bail!("asset does not contain an <svg> root");
-    }
     if normalized.starts_with("<?xml") {
         if let Some(end) = normalized.find("?>") {
             normalized = normalized[(end + 2)..].trim_start().to_owned();
@@ -1002,8 +1034,108 @@ fn validate_and_sanitize_svg(source: &str) -> Result<String> {
         normalized.replace_range(start..end, "");
     }
     normalized = normalized.trim().to_owned();
+    validate_svg_tree(&normalized)?;
     normalized.push('\n');
     Ok(normalized)
+}
+
+fn validate_svg_tree(source: &str) -> Result<()> {
+    let document = roxmltree::Document::parse(source).context("parse SVG XML")?;
+    let root = document.root_element();
+    if root.tag_name().name() != "svg" {
+        bail!("asset root is not <svg>");
+    }
+    const ALLOWED_ELEMENTS: &[&str] = &[
+        "svg",
+        "g",
+        "path",
+        "circle",
+        "ellipse",
+        "line",
+        "polyline",
+        "polygon",
+        "rect",
+        "defs",
+        "clipPath",
+        "mask",
+        "linearGradient",
+        "radialGradient",
+        "stop",
+        "title",
+        "desc",
+        "use",
+    ];
+    const ALLOWED_ATTRIBUTES: &[&str] = &[
+        "xmlns",
+        "viewBox",
+        "width",
+        "height",
+        "fill",
+        "fill-rule",
+        "clip-rule",
+        "fill-opacity",
+        "stroke",
+        "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
+        "stroke-dasharray",
+        "stroke-dashoffset",
+        "stroke-opacity",
+        "opacity",
+        "d",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "points",
+        "transform",
+        "id",
+        "class",
+        "clip-path",
+        "mask",
+        "offset",
+        "stop-color",
+        "stop-opacity",
+        "gradientUnits",
+        "gradientTransform",
+        "fx",
+        "fy",
+        "href",
+        "preserveAspectRatio",
+        "role",
+        "aria-label",
+        "focusable",
+    ];
+    for node in document.descendants().filter(roxmltree::Node::is_element) {
+        let name = node.tag_name().name();
+        if !ALLOWED_ELEMENTS.contains(&name) {
+            bail!("unsafe or unsupported SVG element <{name}>");
+        }
+        for attribute in node.attributes() {
+            let name = attribute.name();
+            if name.starts_with("on") || !ALLOWED_ATTRIBUTES.contains(&name) {
+                bail!("unsafe or unsupported SVG attribute {name:?}");
+            }
+            if matches!(name, "href" | "clip-path" | "mask") {
+                let value = attribute.value().trim();
+                if !value.is_empty()
+                    && !value.starts_with('#')
+                    && !(value.starts_with("url(#") && value.ends_with(')'))
+                {
+                    bail!("external SVG reference is not allowed: {value:?}");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn apply_theme_tokens(repository: &Path, target_commit: &str) -> Result<()> {
@@ -1111,58 +1243,6 @@ fn write_json_report(report: &UpstreamReport, path: &Path) -> Result<()> {
     fs::write(path, format!("{json}\n")).with_context(|| format!("write {}", path.display()))
 }
 
-fn write_review_report(report: &UpstreamReport) -> Result<()> {
-    let directory = root().join("upstream");
-    fs::create_dir_all(&directory)?;
-    let json = serde_json::to_string_pretty(report)?;
-    fs::write(directory.join("review-report.json"), format!("{json}\n"))?;
-
-    let mut markdown = String::from("# Upstream review required\n\n");
-    markdown.push_str(&format!("Generated: `{}`\n\n", report.generated_at));
-    markdown.push_str("This report is generated by `cargo xtask upstream sync --apply`.\n\n");
-    for source in &report.sources {
-        if source.status != SourceStatus::ReviewRequired {
-            continue;
-        }
-        markdown.push_str(&format!(
-            "## {}\n\n`{}` → `{}`\n\n",
-            source.name, source.locked_commit, source.target_commit
-        ));
-        for change in &source.changes {
-            if change.disposition != Disposition::ReviewRequired {
-                continue;
-            }
-            let old_path = change
-                .old_path
-                .as_deref()
-                .map(|old| format!(" (from `{old}`)"))
-                .unwrap_or_default();
-            markdown.push_str(&format!(
-                "- **{}** `{}`{} — {}\n",
-                format_change_kind(change.kind),
-                change.path,
-                old_path,
-                change.reason
-            ));
-        }
-        markdown.push('\n');
-    }
-    fs::write(directory.join("review-report.md"), markdown)?;
-    Ok(())
-}
-
-fn format_change_kind(kind: ChangeKind) -> &'static str {
-    match kind {
-        ChangeKind::Added => "add",
-        ChangeKind::Modified => "modify",
-        ChangeKind::Deleted => "delete",
-        ChangeKind::Renamed => "rename",
-        ChangeKind::Copied => "copy",
-        ChangeKind::TypeChanged => "type-change",
-        ChangeKind::Unknown => "change",
-    }
-}
-
 fn print_report(report: &UpstreamReport, path: &Path) {
     if path == Path::new("-") {
         return;
@@ -1183,9 +1263,6 @@ fn print_report(report: &UpstreamReport, path: &Path) {
         }
     }
     println!("upstream: JSON report written to {}", path.display());
-    if report.apply_requested && report.overall == OverallStatus::ReviewRequired {
-        println!("upstream: review report written to upstream/review-report.json and .md");
-    }
 }
 
 fn git_output<I, S>(directory: Option<&Path>, args: I) -> Result<Output>
@@ -1272,5 +1349,51 @@ mod tests {
     fn sanitizer_rejects_external_resources() {
         assert!(validate_and_sanitize_svg("<svg><script>alert(1)</script></svg>").is_err());
         assert!(validate_and_sanitize_svg("<svg href=\"http://evil\"></svg>").is_err());
+        assert!(
+            validate_and_sanitize_svg("<svg href = \"//evil.example/icon.svg\"></svg>").is_err()
+        );
+        assert!(validate_and_sanitize_svg("<svg href=\"&#104;ttp://evil\"></svg>").is_err());
+        assert!(validate_and_sanitize_svg("<svg><scr<!---->ipt>alert(1)</script></svg>").is_err());
+        assert!(validate_and_sanitize_svg("<svg href=\"../icon.svg\"></svg>").is_err());
+    }
+
+    #[test]
+    fn sanitizer_accepts_only_internal_references() {
+        assert!(
+            validate_and_sanitize_svg(
+                "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"><!-- safe --><defs><path id=\"mark\" d=\"M0 0h1v1z\"/></defs><use href=\"#mark\"/></svg>"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_and_sanitize_svg(
+                "<svg><defs><clipPath id=\"clip\"><rect width=\"1\" height=\"1\"/></clipPath></defs><g clip-path=\"url(#clip)\"/></svg>"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn bundled_icon_set_passes_the_svg_allowlist() {
+        let directory = root().join("crates/tdesign-gpui-assets/assets/icons");
+        let mut paths = fs::read_dir(&directory)
+            .expect("read bundled icons")
+            .collect::<std::io::Result<Vec<_>>>()
+            .expect("list bundled icons");
+        paths.sort_by_key(|entry| entry.file_name());
+        let mut count = 0usize;
+        for entry in paths
+            .into_iter()
+            .filter(|entry| entry.path().extension().and_then(OsStr::to_str) == Some("svg"))
+        {
+            let path = entry.path();
+            let body = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error:#}", path.display()));
+            validate_and_sanitize_svg(&body)
+                .unwrap_or_else(|error| panic!("sanitize {}: {error:#}", path.display()));
+            count += 1;
+        }
+        let expected = count_local_icons().expect("count local icons");
+        assert_eq!(count, expected, "cached upstream icon count changed");
     }
 }

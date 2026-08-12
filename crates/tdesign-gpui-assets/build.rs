@@ -42,25 +42,39 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("out dir"));
     println!("cargo:rerun-if-changed={}", icon_dir.display());
 
+    assert!(
+        icon_dir.is_dir(),
+        "missing icon directory {}",
+        icon_dir.display()
+    );
     let mut icons = BTreeMap::<String, String>::new();
-    if icon_dir.exists() {
-        for entry in fs::read_dir(&icon_dir).expect("read icon directory") {
-            let entry = entry.expect("read icon entry");
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("svg") {
-                continue;
-            }
-            validate_svg(&path);
-            let name = path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .expect("UTF-8 icon name")
-                .to_owned();
-            let variant = variant_name(&name);
-            if let Some(previous) = icons.insert(name.clone(), variant.clone()) {
-                panic!("duplicate icon {name}: {previous} and {variant}");
-            }
+    for entry in fs::read_dir(&icon_dir).expect("read icon directory") {
+        let entry = entry.expect("read icon entry");
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("svg") {
+            continue;
         }
+        validate_svg(&path);
+        let name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("UTF-8 icon name")
+            .to_owned();
+        let variant = variant_name(&name);
+        if let Some(previous) = icons.insert(name.clone(), variant.clone()) {
+            panic!("duplicate icon {name}: {previous} and {variant}");
+        }
+    }
+    assert!(
+        !icons.is_empty(),
+        "no SVG icons found in {}",
+        icon_dir.display()
+    );
+    for core in CORE_ICONS {
+        assert!(
+            icons.contains_key(*core),
+            "required core icon {core:?} is missing"
+        );
     }
 
     let mut variants = BTreeSet::new();

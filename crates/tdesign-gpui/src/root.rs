@@ -97,7 +97,18 @@ impl RenderOnce for TDesignRoot {
             .children(self.child);
         if let Some(overlays) = self.overlays {
             let key_overlays = overlays.clone();
-            for entry in overlays.read(cx).entries() {
+            let entries = overlays.read(cx).entries();
+            let mut messages = Vec::new();
+            let mut notifications = Vec::new();
+            for entry in entries {
+                if entry.kind == OverlayKind::Message {
+                    messages.push((entry.render)(window, cx));
+                    continue;
+                }
+                if entry.kind == OverlayKind::Notification {
+                    notifications.push((entry.render)(window, cx));
+                    continue;
+                }
                 let content = (entry.render)(window, cx);
                 let layer = div()
                     .absolute()
@@ -105,18 +116,60 @@ impl RenderOnce for TDesignRoot {
                     .left_0()
                     .size_full()
                     .flex()
+                    .when(entry.modal, |this| this.occlude())
                     .when(entry.modal, |this| this.bg(gpui::black().opacity(0.45)));
                 let layer = match entry.kind {
                     OverlayKind::Dialog | OverlayKind::Popconfirm | OverlayKind::Guide => {
                         layer.items_center().justify_center()
                     }
                     OverlayKind::Drawer => layer.justify_end(),
-                    OverlayKind::Message => layer.items_start().justify_center().pt_4(),
-                    OverlayKind::Notification => layer.items_start().justify_end().p_4(),
+                    OverlayKind::Message | OverlayKind::Notification => unreachable!(),
                     OverlayKind::Popup => layer.items_start(),
                 }
                 .child(content);
                 root = root.child(layer);
+            }
+            if !messages.is_empty() {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_start()
+                        .justify_center()
+                        .pt_4()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap_2()
+                                .children(messages),
+                        ),
+                );
+            }
+            if !notifications.is_empty() {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_start()
+                        .justify_end()
+                        .p_4()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_end()
+                                .gap_3()
+                                .children(notifications),
+                        ),
+                );
             }
             root = root.on_key_down(move |event, window, cx| {
                 if event.keystroke.key.eq_ignore_ascii_case("escape") {

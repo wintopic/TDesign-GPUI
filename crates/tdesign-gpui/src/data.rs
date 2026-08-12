@@ -34,7 +34,9 @@ impl RenderOnce for List {
         let count = self.delegate.row_count();
         let delegate = self.delegate;
         uniform_list(self.id, count, move |range, window, cx| {
+            let row_count = delegate.row_count();
             range
+                .take_while(|index| *index < row_count)
                 .map(|index| delegate.render_row(index, window, cx))
                 .collect::<Vec<AnyElement>>()
         })
@@ -70,7 +72,7 @@ impl Table {
         self.height = height.into();
         self
     }
-    /// Enables alternating row styling. Delegates can inspect row index to match it.
+    /// Enables alternating row backgrounds around delegate-rendered rows.
     pub fn striped(mut self, striped: bool) -> Self {
         self.striped = striped;
         self
@@ -89,6 +91,7 @@ impl RenderOnce for Table {
             .collect::<Vec<_>>();
         let count = self.delegate.row_count();
         let delegate = self.delegate;
+        let striped = self.striped;
         let list_id: SharedString = format!("{}-rows", self.id).into();
         div()
             .id(self.id)
@@ -107,8 +110,15 @@ impl RenderOnce for Table {
             )
             .child(
                 uniform_list(list_id, count, move |range, window, cx| {
+                    let row_count = delegate.row_count();
                     range
-                        .map(|index| delegate.render_row(index, window, cx))
+                        .take_while(|index| *index < row_count)
+                        .map(|index| {
+                            div()
+                                .when(striped && index % 2 == 1, |row| row.bg(gpui::rgb(0xf7f7f7)))
+                                .child(delegate.render_row(index, window, cx))
+                                .into_any_element()
+                        })
                         .collect::<Vec<AnyElement>>()
                 })
                 .flex_1(),

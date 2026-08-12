@@ -1,4 +1,4 @@
-//! Small smoke gallery used by CI and local component development.
+//! Small compile-and-render smoke application for local component development.
 
 use gpui::{Context, IntoElement, Render, SharedString, Window, div, prelude::*};
 use tdesign_gpui::{
@@ -6,7 +6,7 @@ use tdesign_gpui::{
     parity::COMPONENTS,
 };
 
-/// A compact gallery that exercises light/dark-ready component surfaces.
+/// A compact smoke view that renders representative component surfaces.
 pub struct Gallery {
     title: SharedString,
 }
@@ -14,7 +14,7 @@ impl Gallery {
     /// Creates the gallery.
     pub fn new() -> Self {
         Self {
-            title: "TDesign GPUI gallery".into(),
+            title: "TDesign GPUI smoke gallery".into(),
         }
     }
 }
@@ -56,7 +56,10 @@ impl Render for Gallery {
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(0x666666))
-                        .child(format!("React PC parity: {} / 71", COMPONENTS.len())),
+                        .child(format!(
+                            "API inventory: {} component names",
+                            COMPONENTS.len()
+                        )),
                 )
                 .child(div().flex().flex_wrap().gap_2().children(component_badges)),
         )

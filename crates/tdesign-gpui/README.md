@@ -1,7 +1,7 @@
 # tdesign-gpui
 
 Native, unofficial community implementation of the TDesign React PC component
-system for GPUI. See the [workspace README](../../README.md) for installation,
+system for GPUI. See the [workspace README](https://github.com/wintopic/TDesign-GPUI#readme) for installation,
 examples, component coverage, upstream synchronization, and contribution
 guidance.
 

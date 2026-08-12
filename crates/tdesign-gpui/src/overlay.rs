@@ -87,10 +87,28 @@ impl OverlayState {
         true
     }
 
+    /// Removes one overlay without requiring a window or restoring focus.
+    ///
+    /// This is used by transient messages whose timeout runs in app context.
+    pub fn remove(&mut self, id: OverlayId, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
+            return false;
+        };
+        self.entries.remove(index);
+        cx.notify();
+        true
+    }
+
     /// Dismisses the top-most layer, which is the layer that should receive
     /// an Escape key by default.
     pub fn dismiss_top(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(id) = self.entries.last().map(|entry| entry.id) else {
+        let Some(id) = self
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| !matches!(entry.kind, OverlayKind::Message | OverlayKind::Notification))
+            .map(|entry| entry.id)
+        else {
             return false;
         };
         self.dismiss(id, window, cx)

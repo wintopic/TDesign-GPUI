@@ -90,6 +90,7 @@ impl Timeline {
 
 impl RenderOnce for Timeline {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let item_count = self.items.len();
         let items =
             self.items
                 .into_iter()
@@ -134,7 +135,7 @@ impl RenderOnce for Timeline {
                         )
                         .child(div().flex().w_4().justify_center().child(marker))
                         .child(content)
-                        .when(index + 1 < 1000, |this| {
+                        .when(index + 1 < item_count, |this| {
                             this.child(
                                 div()
                                     .absolute()
@@ -350,7 +351,7 @@ impl RenderOnce for Watermark {
                                 div()
                                     .id(SharedString::from(format!("watermark-{row}-{column}")))
                                     .text_sm()
-                                    .text_color(gpui::rgba(0x000000))
+                                    .text_color(gpui::rgba(0x000000ff))
                                     .opacity(opacity)
                                     .w(gap)
                                     .child(text.clone())

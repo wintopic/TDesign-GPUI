@@ -34,7 +34,7 @@ please allow a reasonable private remediation period before public disclosure.
 
 ## Security boundaries
 
-TDesign GPUI embeds sanitized upstream SVG assets and provides upload integration
+TDesign GPUI embeds XML-parsed, allowlisted upstream SVG assets and provides upload integration
 points, but applications remain responsible for authorization, server-side file
 validation, content limits, secret storage, TLS policy, and trust decisions for
 custom `UploadBackend` implementations. GPUI and platform vulnerabilities should
